@@ -62,6 +62,9 @@ class ChecklistItem(Base):
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # is_skipped: True only when is_required=False and the employee chose to skip this step.
+    # Required items (is_required=True) can never be skipped.
+    is_skipped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_by_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"))
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(String(500))
