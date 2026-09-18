@@ -1,0 +1,206 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.auth import get_current_user, require_manager
+from app.database import get_db
+from app.models.branch import Branch
+from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem
+from app.models.employee import Employee
+from app.schemas.checklist import (
+    TemplateCreate,
+    TemplateListItem,
+    TemplateDetail,
+    TemplateItemCreate,
+    TemplateItemOut,
+)
+
+router = APIRouter(prefix="/templates", tags=["templates"])
+
+
+async def _get_or_404(template_id: int, db: AsyncSession) -> ChecklistTemplate:
+    result = await db.execute(
+        select(ChecklistTemplate).where(ChecklistTemplate.id == template_id)
+    )
+    tpl = result.scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Шаблон не найден")
+    return tpl
+
+
+async def _branch_name(branch_id: int | None, db: AsyncSession) -> str | None:
+    if not branch_id:
+        return None
+    b = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+    return b.name if b else None
+
+
+async def _item_count(template_id: int, db: AsyncSession) -> int:
+    result = await db.execute(
+        select(ChecklistTemplateItem).where(ChecklistTemplateItem.template_id == template_id)
+    )
+    return len(result.scalars().all())
+
+
+@router.get("", response_model=list[TemplateListItem])
+async def list_templates(
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChecklistTemplate).where(ChecklistTemplate.is_active == True)  # noqa: E712
+    )
+    templates = result.scalars().all()
+    return [
+        TemplateListItem(
+            id=tpl.id,
+            name=tpl.name,
+            description=tpl.description,
+            category=tpl.category,
+            branch_id=tpl.branch_id,
+            branch_name=await _branch_name(tpl.branch_id, db),
+            is_active=tpl.is_active,
+            item_count=await _item_count(tpl.id, db),
+            created_at=tpl.created_at,
+        )
+        for tpl in templates
+    ]
+
+
+@router.post("", response_model=TemplateListItem)
+async def create_template(
+    data: TemplateCreate,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    if not data.name.strip():
+        raise HTTPException(status_code=400, detail="Название обязательно")
+    tpl = ChecklistTemplate(
+        name=data.name.strip(),
+        description=data.description,
+        category=data.category,
+        branch_id=data.branch_id,
+        created_by_employee_id=current.id,
+    )
+    db.add(tpl)
+    await db.commit()
+    await db.refresh(tpl)
+    return TemplateListItem(
+        id=tpl.id,
+        name=tpl.name,
+        description=tpl.description,
+        category=tpl.category,
+        branch_id=tpl.branch_id,
+        branch_name=await _branch_name(tpl.branch_id, db),
+        is_active=tpl.is_active,
+        item_count=0,
+        created_at=tpl.created_at,
+    )
+
+
+@router.get("/{template_id}", response_model=TemplateDetail)
+async def get_template(
+    template_id: int,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await _get_or_404(template_id, db)
+    items_res = await db.execute(
+        select(ChecklistTemplateItem)
+        .where(ChecklistTemplateItem.template_id == tpl.id)
+        .order_by(ChecklistTemplateItem.sort_order)
+    )
+    items = items_res.scalars().all()
+    return TemplateDetail(
+        id=tpl.id,
+        name=tpl.name,
+        description=tpl.description,
+        category=tpl.category,
+        branch_id=tpl.branch_id,
+        branch_name=await _branch_name(tpl.branch_id, db),
+        is_active=tpl.is_active,
+        item_count=len(items),
+        created_at=tpl.created_at,
+        items=[TemplateItemOut.model_validate(i) for i in items],
+    )
+
+
+@router.patch("/{template_id}", response_model=TemplateListItem)
+async def update_template(
+    template_id: int,
+    data: TemplateCreate,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await _get_or_404(template_id, db)
+    tpl.name = data.name.strip()
+    tpl.description = data.description
+    tpl.category = data.category
+    tpl.branch_id = data.branch_id
+    await db.commit()
+    await db.refresh(tpl)
+    return TemplateListItem(
+        id=tpl.id,
+        name=tpl.name,
+        description=tpl.description,
+        category=tpl.category,
+        branch_id=tpl.branch_id,
+        branch_name=await _branch_name(tpl.branch_id, db),
+        is_active=tpl.is_active,
+        item_count=await _item_count(tpl.id, db),
+        created_at=tpl.created_at,
+    )
+
+
+@router.delete("/{template_id}")
+async def deactivate_template(
+    template_id: int,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    tpl = await _get_or_404(template_id, db)
+    tpl.is_active = False
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/{template_id}/items", response_model=TemplateItemOut)
+async def add_item(
+    template_id: int,
+    data: TemplateItemCreate,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_or_404(template_id, db)
+    item = ChecklistTemplateItem(
+        template_id=template_id,
+        title=data.title.strip(),
+        description=data.description,
+        sort_order=data.sort_order,
+        is_required=data.is_required,
+    )
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return TemplateItemOut.model_validate(item)
+
+
+@router.delete("/{template_id}/items/{item_id}")
+async def remove_item(
+    template_id: int,
+    item_id: int,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ChecklistTemplateItem).where(
+            ChecklistTemplateItem.id == item_id,
+            ChecklistTemplateItem.template_id == template_id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Пункт не найден")
+    await db.delete(item)
+    await db.commit()
+    return {"ok": True}
