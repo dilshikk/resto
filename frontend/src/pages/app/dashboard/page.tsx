@@ -1,11 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { listBranches } from "@/api/branches.ts";
-import { getMyProfile } from "@/api/employees.ts";
+import { getMyProfile, listEmployees } from "@/api/employees.ts";
 import { listChecklists } from "@/api/checklists.ts";
 import { listIssues } from "@/api/issues.ts";
 import { listNotifications, markNotificationRead } from "@/api/notifications.ts";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   Users,
@@ -81,7 +80,7 @@ export default function DashboardPage() {
   });
   const { data: employees, isLoading: employeesLoading } = useQuery({
     queryKey: ["employees"],
-    queryFn: () => listEmployeesSafe(),
+    queryFn: () => listEmployees(),
   });
   const { data: todayChecklists, isLoading: checklistsLoading } = useQuery({
     queryKey: ["checklists", today],
@@ -268,11 +267,4 @@ export default function DashboardPage() {
       </div>
     </div>
   );
-}
-
-// Local wrapper kept separate so importing listEmployees doesn't shadow the
-// `employees` variable name above.
-import { listEmployees } from "@/api/employees.ts";
-async function listEmployeesSafe() {
-  return listEmployees();
 }
