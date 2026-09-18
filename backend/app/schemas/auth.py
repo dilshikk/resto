@@ -9,3 +9,9 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    employee_id: int
