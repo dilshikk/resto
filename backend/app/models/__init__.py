@@ -6,10 +6,12 @@ from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem, Check
 from app.models.issue import Issue, IssueComment
 from app.models.shift import Shift
 from app.models.notification import Notification
+from app.models.photo import Photo
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
     "ChecklistTemplate", "ChecklistTemplateItem", "Checklist", "ChecklistItem",
     "Issue", "IssueComment",
     "Shift", "Notification",
+    "Photo",
 ]
