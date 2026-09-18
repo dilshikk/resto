@@ -19,4 +19,9 @@ CREATE INDEX IF NOT EXISTS standards_category_idx ON standards(category);
 ALTER TABLE checklist_template_items
     ADD COLUMN IF NOT EXISTS standard_code VARCHAR(30) REFERENCES standards(code);
 
+-- Denormalized onto generated checklist items too, so historical checklists keep the link
+-- even if the template item's standard changes later.
+ALTER TABLE checklist_items
+    ADD COLUMN IF NOT EXISTS standard_code VARCHAR(30) REFERENCES standards(code);
+
 COMMIT;
