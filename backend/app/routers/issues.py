@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.employee import Employee
 from app.models.issue import Issue, IssueComment
+from app.routers.notifications import notify
 from app.schemas.issue import (
     IssueCreate,
     IssueOut,
@@ -187,11 +188,22 @@ async def update_status(
     if not issue:
         raise HTTPException(status_code=404, detail="Инцидент не найден")
 
+    previous_assignee = issue.assigned_to_employee_id
     issue.status = data.status
     if data.assigned_to_employee_id is not None:
         issue.assigned_to_employee_id = data.assigned_to_employee_id
     if data.status == "closed" and not issue.resolved_at:
         issue.resolved_at = datetime.now(timezone.utc)
+
+    # Notify the newly assigned employee (skip if re-saving the same assignee).
+    if data.assigned_to_employee_id is not None and data.assigned_to_employee_id != previous_assignee:
+        await notify(
+            db,
+            employee_id=data.assigned_to_employee_id,
+            type_="issue_assigned",
+            title="Вам назначена проблема",
+            message=issue.title,
+        )
 
     await db.commit()
     await db.refresh(issue)
