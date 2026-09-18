@@ -20,7 +20,6 @@ import {
   X,
   MessageSquare,
   Clock,
-  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
@@ -48,6 +47,15 @@ const CATEGORIES = [
   { value: "staff", label: "Персонал" },
   { value: "client", label: "Клиент" },
 ];
+
+const NEXT_STATUS: Record<string, string> = {
+  open: "in_progress",
+  in_progress: "closed",
+};
+const NEXT_LABEL: Record<string, string> = {
+  open: "Взять в работу",
+  in_progress: "Закрыть",
+};
 
 function priorityInfo(v: string) {
   return PRIORITIES.find((p) => p.value === v) ?? PRIORITIES[1];
@@ -95,11 +103,7 @@ function PhotoPicker({
       <div className="flex flex-wrap gap-2">
         {urls.map((url, i) => (
           <div key={i} className="relative size-20 shrink-0">
-            <img
-              src={photoSrc(url)}
-              alt=""
-              className="size-20 rounded-lg object-cover border"
-            />
+            <img src={photoSrc(url)} alt="" className="size-20 rounded-lg object-cover border" />
             <button
               type="button"
               onClick={() => onChange(urls.filter((_, j) => j !== i))}
@@ -275,10 +279,11 @@ function IssueDetailModal({
   const statusMut = useMutation({
     mutationFn: (status: string) => updateIssueStatus(issueId, { status }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["issue", issueId] });
+      toast.success("Статус обновлён");
       qc.invalidateQueries({ queryKey: ["issues"] });
+      qc.invalidateQueries({ queryKey: ["issue", issueId] });
     },
-    onError: () => toast.error("Не удалось изменить статус"),
+    onError: () => toast.error("Не удалось обновить статус"),
   });
 
   const commentMut = useMutation({
@@ -286,169 +291,142 @@ function IssueDetailModal({
     onSuccess: () => {
       setComment("");
       qc.invalidateQueries({ queryKey: ["issue", issueId] });
-      qc.invalidateQueries({ queryKey: ["issues"] });
     },
-    onError: () => toast.error("Не удалось добавить комментарий"),
+    onError: () => toast.error("Не удалось отправить комментарий"),
   });
-
-  const NEXT_STATUS: Record<string, string> = {
-    open: "in_progress",
-    in_progress: "closed",
-  };
-  const NEXT_LABEL: Record<string, string> = {
-    open: "Принять в работу",
-    in_progress: "Закрыть",
-  };
 
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 sm:items-center sm:p-4">
-        <div className="flex w-full max-h-[92vh] flex-col overflow-hidden rounded-t-2xl border bg-card shadow-xl sm:max-w-xl sm:rounded-2xl">
-          {/* Header */}
-          <div className="flex shrink-0 items-start justify-between gap-3 border-b px-5 py-4">
-            <div className="min-w-0 space-y-1">
-              <h2 className="font-semibold leading-snug">{detail?.title ?? "..."}</h2>
-              {detail && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", statusInfo(detail.status).color)}>
-                    {statusInfo(detail.status).label}
-                  </span>
-                  <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", priorityInfo(detail.priority).color)}>
-                    {priorityInfo(detail.priority).label}
-                  </span>
-                  <span className="text-xs text-muted-foreground">{catLabel(detail.category)}</span>
-                </div>
-              )}
-            </div>
+        <div className="flex w-full max-h-[92vh] flex-col overflow-hidden rounded-t-2xl border bg-card shadow-xl sm:max-w-lg sm:rounded-2xl">
+          <div className="flex shrink-0 items-center justify-between border-b px-5 py-4">
+            <h2 className="text-lg font-semibold truncate pr-4">
+              {detail ? detail.title : "Загрузка..."}
+            </h2>
             <button type="button" onClick={onClose} className="shrink-0 text-muted-foreground hover:text-foreground text-xl">✕</button>
           </div>
 
-          {isLoading ? (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <div className="h-8 w-32 animate-pulse rounded-lg bg-muted" />
-            </div>
-          ) : detail ? (
-            <div className="flex-1 overflow-y-auto">
-              {/* Meta */}
-              <div className="border-b px-5 py-4 space-y-2 text-sm">
-                <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
-                  <span>Филиал: <span className="text-foreground font-medium">{detail.branch_name}</span></span>
-                  <span>Сообщил: <span className="text-foreground">{detail.reported_by_name}</span></span>
-                  {detail.assigned_to_name && (
-                    <span>Назначено: <span className="text-foreground">{detail.assigned_to_name}</span></span>
-                  )}
-                  <span className="flex items-center gap-1">
-                    <Clock className="size-3.5" />
-                    {fmtDate(detail.created_at)}
-                  </span>
-                </div>
-                {detail.description && (
-                  <p className="text-foreground">{detail.description}</p>
-                )}
+          <div className="flex-1 overflow-y-auto">
+            {isLoading ? (
+              <div className="space-y-3 p-5">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="h-8 animate-pulse rounded-lg bg-muted" />
+                ))}
               </div>
-
-              {/* Photos */}
-              {detail.photo_urls.length > 0 && (
-                <div className="border-b px-5 py-4">
-                  <p className="mb-2 text-sm font-medium">Фото ({detail.photo_urls.length})</p>
+            ) : detail ? (
+              <>
+                <div className="space-y-3 px-5 py-4 border-b">
                   <div className="flex flex-wrap gap-2">
-                    {detail.photo_urls.map((url, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => setLightbox(url)}
-                        className="cursor-pointer overflow-hidden rounded-lg border"
-                      >
-                        <img
-                          src={photoSrc(url)}
-                          alt=""
-                          className="size-20 object-cover transition-transform hover:scale-105"
-                        />
-                      </button>
+                    {[
+                      { label: statusInfo(detail.status).label, color: statusInfo(detail.status).color },
+                      { label: priorityInfo(detail.priority).label, color: priorityInfo(detail.priority).color },
+                    ].map((badge) => (
+                      <span key={badge.label} className={cn("rounded-full px-2.5 py-0.5 text-xs font-medium", badge.color)}>
+                        {badge.label}
+                      </span>
                     ))}
+                    <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium">{catLabel(detail.category)}</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">{detail.branch_name}</p>
+                  {detail.description && <p className="text-sm">{detail.description}</p>}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><Clock className="size-3" />Создано: {fmtDate(detail.created_at)}</span>
+                    <span>Кем: {detail.reported_by_name}</span>
+                    {detail.assigned_to_name && <span>Назначено: {detail.assigned_to_name}</span>}
                   </div>
                 </div>
-              )}
 
-              {/* Comments */}
-              <div className="px-5 py-4 space-y-3">
-                <p className="text-sm font-medium flex items-center gap-1.5">
-                  <MessageSquare className="size-4" />
-                  Комментарии ({detail.comments.length})
-                </p>
-                {detail.comments.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Пока нет комментариев</p>
-                ) : (
-                  <div className="space-y-3">
-                    {detail.comments.map((c) => (
-                      <div key={c.id} className="rounded-lg bg-muted/50 px-3 py-2.5 space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold">{c.author_name}</span>
-                          <span className="text-xs text-muted-foreground">{fmtDate(c.created_at)}</span>
-                        </div>
-                        <p className="text-sm">{c.text}</p>
-                      </div>
-                    ))}
+                {detail.photo_urls.length > 0 && (
+                  <div className="px-5 py-4 border-b space-y-2">
+                    <p className="text-sm font-medium">Фотографии ({detail.photo_urls.length})</p>
+                    <div className="flex flex-wrap gap-2 overflow-hidden rounded-lg">
+                      {detail.photo_urls.map((url, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setLightbox(photoSrc(url))}
+                          className="size-20 overflow-hidden rounded-lg border"
+                        >
+                          <img src={photoSrc(url)} alt="" className="size-20 object-cover transition-transform hover:scale-105" />
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
-              </div>
-            </div>
-          ) : null}
 
-          {/* Footer: comment + status action */}
-          <div className="shrink-0 border-t px-5 py-4 space-y-3">
-            <div className="flex gap-2">
-              <input
-                className="flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Написать комментарий…"
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && comment.trim()) {
-                    e.preventDefault();
-                    commentMut.mutate(comment.trim());
-                  }
-                }}
-              />
-              <button
-                type="button"
-                disabled={!comment.trim() || commentMut.isPending}
-                onClick={() => commentMut.mutate(comment.trim())}
-                className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                Отпр.
-              </button>
+                <div className="px-5 py-4 space-y-3">
+                  <p className="text-sm font-medium flex items-center gap-1.5">
+                    <MessageSquare className="size-4" />
+                    Комментарии ({detail.comments.length})
+                  </p>
+                  {detail.comments.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Пока нет комментариев</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {detail.comments.map((c) => (
+                        <div key={c.id} className="rounded-lg bg-muted/50 px-3 py-2.5 space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold">{c.author_name}</span>
+                            <span className="text-xs text-muted-foreground">{fmtDate(c.created_at)}</span>
+                          </div>
+                          <p className="text-sm">{c.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+
+            <div className="shrink-0 border-t px-5 py-4 space-y-3">
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="Написать комментарий…"
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && comment.trim()) {
+                      e.preventDefault();
+                      commentMut.mutate(comment.trim());
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!comment.trim() || commentMut.isPending}
+                  onClick={() => commentMut.mutate(comment.trim())}
+                  className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  Отпр.
+                </button>
+              </div>
+              {isManager && detail && NEXT_STATUS[detail.status] && (
+                <button
+                  type="button"
+                  onClick={() => statusMut.mutate(NEXT_STATUS[detail.status])}
+                  disabled={statusMut.isPending}
+                  className={cn(
+                    "w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50",
+                    detail.status === "open"
+                      ? "bg-yellow-500 text-white hover:bg-yellow-600"
+                      : "bg-green-600 text-white hover:bg-green-700",
+                  )}
+                >
+                  {statusMut.isPending ? "Обновляем..." : NEXT_LABEL[detail.status]}
+                </button>
+              )}
             </div>
-            {isManager && detail && NEXT_STATUS[detail.status] && (
-              <button
-                type="button"
-                onClick={() => statusMut.mutate(NEXT_STATUS[detail.status])}
-                disabled={statusMut.isPending}
-                className={cn(
-                  "w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50",
-                  detail.status === "open"
-                    ? "bg-yellow-500 text-white hover:bg-yellow-600"
-                    : "bg-green-600 text-white hover:bg-green-700",
-                )}
-              >
-                {statusMut.isPending ? "Обновляем..." : NEXT_LABEL[detail.status]}
-              </button>
-            )}
           </div>
         </div>
       </div>
 
-      {/* Lightbox */}
       {lightbox && (
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90"
           onClick={() => setLightbox(null)}
         >
-          <img
-            src={photoSrc(lightbox)}
-            alt=""
-            className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain"
-          />
+          <img src={lightbox} alt="" className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain" />
         </div>
       )}
     </>
@@ -511,15 +489,8 @@ export default function IssuesPage() {
     queryFn: () => listIssues({ status: statusFilter || undefined }),
   });
 
-  const counts = {
-    open: issues?.filter((i) => i.status === "open").length ?? 0,
-    in_progress: issues?.filter((i) => i.status === "in_progress").length ?? 0,
-    closed: issues?.filter((i) => i.status === "closed").length ?? 0,
-  };
-
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-8">
-      {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Проблемы</h1>
@@ -534,34 +505,29 @@ export default function IssuesPage() {
         </button>
       </div>
 
-      {/* Status tabs */}
       <div className="flex gap-1 rounded-xl border bg-muted/30 p-1">
-        {STATUSES.map((s) => {
-          const count = issues ? (s.value === statusFilter ? issues.length : 0) : 0;
-          return (
-            <button
-              key={s.value}
-              type="button"
-              onClick={() => setStatusFilter(s.value)}
-              className={cn(
-                "flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                statusFilter === s.value
-                  ? "bg-card shadow-sm text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {s.label}
-              {statusFilter === s.value && issues && (
-                <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary font-semibold">
-                  {issues.length}
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {STATUSES.map((s) => (
+          <button
+            key={s.value}
+            type="button"
+            onClick={() => setStatusFilter(s.value)}
+            className={cn(
+              "flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              statusFilter === s.value
+                ? "bg-card shadow-sm text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {s.label}
+            {statusFilter === s.value && issues && (
+              <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary font-semibold">
+                {issues.length}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
 
-      {/* List */}
       {isLoading ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {Array.from({ length: 4 }).map((_, i) => (
