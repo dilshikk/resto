@@ -9,6 +9,7 @@ class TemplateItemCreate(BaseModel):
     description: str | None = None
     sort_order: int = 0
     is_required: bool = True
+    standard_code: str | None = None
 
 
 class TemplateItemOut(TemplateItemCreate):
@@ -68,6 +69,8 @@ class ChecklistItemOut(BaseModel):
     completed_at: datetime | None = None
     note: str | None = None
     photos: list[ChecklistItemPhotoOut] = []
+    standard_code: str | None = None
+    standard_title: str | None = None
 
 
 class ChecklistOut(BaseModel):
