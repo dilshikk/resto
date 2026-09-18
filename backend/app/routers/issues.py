@@ -1,4 +1,3 @@
-import base64
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,7 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.employee import Employee
 from app.models.issue import Issue, IssueComment
+from app.routers.audit_logs import log_action
 from app.routers.notifications import notify
 from app.schemas.issue import (
     IssueCreate,
@@ -138,6 +138,13 @@ async def create_issue(
         checklist_id=data.checklist_id,
     )
     db.add(issue)
+    await db.flush()
+
+    await log_action(
+        db, actor_id=current.id, action="issue.created", entity_type="issue", entity_id=issue.id,
+        metadata={"title": issue.title, "branch_id": issue.branch_id, "priority": issue.priority},
+    )
+
     await db.commit()
     await db.refresh(issue)
     return await _build_out(issue, db)
@@ -189,6 +196,7 @@ async def update_status(
         raise HTTPException(status_code=404, detail="Инцидент не найден")
 
     previous_assignee = issue.assigned_to_employee_id
+    previous_status = issue.status
     issue.status = data.status
     if data.assigned_to_employee_id is not None:
         issue.assigned_to_employee_id = data.assigned_to_employee_id
@@ -203,6 +211,16 @@ async def update_status(
             type_="issue_assigned",
             title="Вам назначена проблема",
             message=issue.title,
+        )
+        await log_action(
+            db, actor_id=current.id, action="issue.assigned", entity_type="issue", entity_id=issue.id,
+            metadata={"assigned_to_employee_id": data.assigned_to_employee_id},
+        )
+
+    if previous_status != data.status:
+        await log_action(
+            db, actor_id=current.id, action="issue.status_changed", entity_type="issue", entity_id=issue.id,
+            metadata={"from": previous_status, "to": data.status},
         )
 
     await db.commit()
