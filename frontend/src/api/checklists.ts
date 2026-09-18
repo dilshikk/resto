@@ -9,6 +9,7 @@ export type ChecklistTemplateItem = {
   description?: string;
   sort_order: number;
   is_required: boolean;
+  standard_code?: string;
 };
 
 export type ChecklistTemplate = {
@@ -36,6 +37,13 @@ export type TemplateCreate = {
 
 // ── Checklist types ───────────────────────────────────────────────────────
 
+export type ChecklistItemPhoto = {
+  id: number;
+  url: string;
+  uploaded_by_name: string;
+  created_at: string;
+};
+
 export type ChecklistItem = {
   id: number;
   checklist_id: number;
@@ -44,9 +52,13 @@ export type ChecklistItem = {
   is_required: boolean;
   sort_order: number;
   is_completed: boolean;
+  is_skipped: boolean;
   completed_by_name?: string;
   completed_at?: string;
   note?: string;
+  photos: ChecklistItemPhoto[];
+  standard_code?: string;
+  standard_title?: string;
 };
 
 export type Checklist = {
@@ -60,6 +72,7 @@ export type Checklist = {
   status: "open" | "completed";
   total_items: number;
   completed_items: number;
+  skipped_items: number;
   created_at: string;
 };
 
@@ -71,6 +84,20 @@ export type ChecklistCreate = {
   shift: string;
   date: string;
 };
+
+/** Returned by GET /checklists/{id}/current-item. null = all done, ready to complete. */
+export type CurrentItem = {
+  id: number;
+  checklist_id: number;
+  title: string;
+  description?: string;
+  is_required: boolean;
+  sort_order: number;
+  total_items: number;
+  current_position: number;
+  standard_code?: string;
+  standard_title?: string;
+} | null;
 
 // ── Templates API ─────────────────────────────────────────────────────────
 
@@ -100,9 +127,18 @@ export async function deactivateTemplate(id: number): Promise<void> {
 
 export async function addTemplateItem(
   templateId: number,
-  data: { title: string; description?: string; sort_order?: number; is_required?: boolean },
+  data: { title: string; description?: string; sort_order?: number; is_required?: boolean; standard_code?: string },
 ): Promise<ChecklistTemplateItem> {
   const res = await apiClient.post<ChecklistTemplateItem>(`/templates/${templateId}/items`, data);
+  return res.data;
+}
+
+export async function updateTemplateItem(
+  templateId: number,
+  itemId: number,
+  data: { title: string; description?: string; sort_order?: number; is_required?: boolean; standard_code?: string },
+): Promise<ChecklistTemplateItem> {
+  const res = await apiClient.patch<ChecklistTemplateItem>(`/templates/${templateId}/items/${itemId}`, data);
   return res.data;
 }
 
@@ -131,13 +167,33 @@ export async function createChecklist(data: ChecklistCreate): Promise<Checklist>
   return res.data;
 }
 
+/** Step-by-step: get the current (next pending) item. Returns null when all done. */
+export async function getCurrentItem(checklistId: number): Promise<CurrentItem> {
+  const res = await apiClient.get<CurrentItem>(`/checklists/${checklistId}/current-item`);
+  return res.data;
+}
+
+/** Mark an item as completed (or un-complete it). */
 export async function toggleChecklistItem(
   checklistId: number,
   itemId: number,
   note?: string,
-): Promise<{ is_completed: boolean }> {
-  const res = await apiClient.patch<{ is_completed: boolean }>(
+): Promise<{ is_completed: boolean; is_skipped: boolean }> {
+  const res = await apiClient.patch<{ is_completed: boolean; is_skipped: boolean }>(
     `/checklists/${checklistId}/items/${itemId}/toggle`,
+    { note },
+  );
+  return res.data;
+}
+
+/** Skip an optional (is_required=false) item. Required items return 400. */
+export async function skipChecklistItem(
+  checklistId: number,
+  itemId: number,
+  note?: string,
+): Promise<{ is_skipped: boolean }> {
+  const res = await apiClient.post<{ is_skipped: boolean }>(
+    `/checklists/${checklistId}/items/${itemId}/skip`,
     { note },
   );
   return res.data;
