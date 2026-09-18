@@ -9,6 +9,7 @@ import BranchesPage from "./pages/app/branches/page.tsx";
 import EmployeesPage from "./pages/app/employees/page.tsx";
 import TemplatesPage from "./pages/app/templates/page.tsx";
 import ChecklistsPage from "./pages/app/checklists/page.tsx";
+import ReportsPage from "./pages/app/reports/page.tsx";
 import ComingSoon from "./pages/app/ComingSoon.tsx";
 import { useAuth } from "./context/auth-context.tsx";
 
@@ -37,8 +38,8 @@ export default function App() {
             <Route path="/app/employees" element={<EmployeesPage />} />
             <Route path="/app/checklists" element={<ChecklistsPage />} />
             <Route path="/app/templates" element={<TemplatesPage />} />
+            <Route path="/app/reports" element={<ReportsPage />} />
             <Route path="/app/issues" element={<ComingSoon title="Проблемы" />} />
-            <Route path="/app/reports" element={<ComingSoon title="Аналитика" />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
