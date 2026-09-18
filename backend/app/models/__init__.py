@@ -8,6 +8,7 @@ from app.models.shift import Shift
 from app.models.notification import Notification
 from app.models.photo import Photo
 from app.models.standard import Standard
+from app.models.audit_log import AuditLog
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
@@ -16,4 +17,5 @@ __all__ = [
     "Shift", "Notification",
     "Photo",
     "Standard",
+    "AuditLog",
 ]
