@@ -5,7 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import engine, Base
-from app.routers import auth, branches, roles, employees, templates, checklists, analytics, issues
+from app.routers import (
+    auth,
+    branches,
+    roles,
+    employees,
+    templates,
+    checklists,
+    analytics,
+    issues,
+    shifts,
+    notifications,
+)
 
 
 @asynccontextmanager
@@ -17,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.2.0",
+    version="1.3.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
@@ -38,6 +49,8 @@ app.include_router(templates.router, prefix="/api/v1")
 app.include_router(checklists.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(issues.router, prefix="/api/v1")
+app.include_router(shifts.router, prefix="/api/v1")
+app.include_router(notifications.router, prefix="/api/v1")
 
 
 @app.get("/health")
