@@ -15,6 +15,7 @@ from app.models.employee import Employee
 from app.models.photo import Photo
 from app.models.role import Role
 from app.models.standard import Standard
+from app.routers.audit_logs import log_action
 from app.schemas.checklist import (
     ChecklistCreate,
     ChecklistOut,
@@ -184,6 +185,11 @@ async def create_checklist(
             )
         )
 
+    await log_action(
+        db, actor_id=current.id, action="checklist.created", entity_type="checklist", entity_id=cl.id,
+        metadata={"template_id": tpl.id, "branch_id": data.branch_id, "date": data.date},
+    )
+
     await db.commit()
     await db.refresh(cl)
     return await _build_out(cl, db)
@@ -268,6 +274,15 @@ async def toggle_item(
         item.completed_at = None
         item.note = None
 
+    await log_action(
+        db,
+        actor_id=current.id,
+        action="task.completed" if item.is_completed else "task.reopened",
+        entity_type="checklist_item",
+        entity_id=item.id,
+        metadata={"checklist_id": checklist_id, "title": item.title, "note": item.note},
+    )
+
     await db.commit()
     return {"is_completed": item.is_completed}
 
@@ -284,6 +299,9 @@ async def complete_checklist(
     if not cl:
         raise HTTPException(status_code=404, detail="Чек-лист не найден")
     cl.status = "completed"
+    await log_action(
+        db, actor_id=current.id, action="checklist.completed", entity_type="checklist", entity_id=cl.id,
+    )
     await db.commit()
     return {"ok": True}
 
@@ -326,6 +344,13 @@ async def upload_item_photo(
         url=f"/api/v1/checklists/photos/{filename}",
     )
     db.add(photo)
+    await db.flush()
+
+    await log_action(
+        db, actor_id=current.id, action="photo.uploaded", entity_type="checklist_item", entity_id=item.id,
+        metadata={"photo_id": photo.id},
+    )
+
     await db.commit()
     await db.refresh(photo)
     return ChecklistItemPhotoOut(
@@ -366,5 +391,9 @@ async def delete_item_photo(
             raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     await db.delete(photo)
+    await log_action(
+        db, actor_id=current.id, action="photo.deleted", entity_type="checklist_item", entity_id=item_id,
+        metadata={"photo_id": photo_id},
+    )
     await db.commit()
     return {"ok": True}
