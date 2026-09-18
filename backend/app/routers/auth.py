@@ -18,7 +18,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
-from app.schemas.auth import TokenResponse, RefreshRequest
+from app.schemas.auth import TokenResponse, RefreshRequest, CreateUserRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -67,22 +67,24 @@ async def logout(_: Employee = Depends(get_current_user)):
 
 @router.post("/create-user", include_in_schema=False)
 async def create_user_internal(
-    email: str,
-    password: str,
-    employee_id: int,
+    body: CreateUserRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД."""
+    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД.
+
+    Принимает данные в теле запроса (JSON), а не в query-параметрах, чтобы
+    пароль не попадал в URL (логи сервера, история браузера, referrer).
+    """
     count_result = await db.execute(select(func.count()).select_from(User))
     count = count_result.scalar_one()
     if count > 0:
         raise HTTPException(status_code=403, detail="Users already exist")
 
-    user = User(email=email, password_hash=hash_password(password))
+    user = User(email=body.email, password_hash=hash_password(body.password))
     db.add(user)
     await db.flush()
 
-    account = EmployeeAccount(employee_id=employee_id, user_id=user.id)
+    account = EmployeeAccount(employee_id=body.employee_id, user_id=user.id)
     db.add(account)
     await db.commit()
     return {"user_id": user.id}
