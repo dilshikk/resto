@@ -19,7 +19,7 @@ services:
       - ./backend/migrations/007_audit_logs.sql:/docker-entrypoint-initdb.d/007_audit_logs.sql
       - ./backend/migrations/008_checklist_item_skip.sql:/docker-entrypoint-initdb.d/008_checklist_item_skip.sql
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mado -d mado_checklist"]
       interval: 5s
