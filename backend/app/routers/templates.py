@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem
 from app.models.employee import Employee
+from app.models.standard import Standard
 from app.schemas.checklist import (
     TemplateCreate,
     TemplateListItem,
@@ -40,6 +41,16 @@ async def _item_count(template_id: int, db: AsyncSession) -> int:
         select(ChecklistTemplateItem).where(ChecklistTemplateItem.template_id == template_id)
     )
     return len(result.scalars().all())
+
+
+async def _validate_standard_code(standard_code: str | None, db: AsyncSession) -> None:
+    if not standard_code:
+        return
+    standard = (
+        await db.execute(select(Standard).where(Standard.code == standard_code))
+    ).scalar_one_or_none()
+    if not standard:
+        raise HTTPException(status_code=404, detail="Стандарт с таким кодом не найден")
 
 
 @router.get("", response_model=list[TemplateListItem])
@@ -172,14 +183,47 @@ async def add_item(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_or_404(template_id, db)
+    await _validate_standard_code(data.standard_code, db)
     item = ChecklistTemplateItem(
         template_id=template_id,
         title=data.title.strip(),
         description=data.description,
         sort_order=data.sort_order,
         is_required=data.is_required,
+        standard_code=data.standard_code,
     )
     db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return TemplateItemOut.model_validate(item)
+
+
+@router.patch("/{template_id}/items/{item_id}", response_model=TemplateItemOut)
+async def update_item(
+    template_id: int,
+    item_id: int,
+    data: TemplateItemCreate,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    await _validate_standard_code(data.standard_code, db)
+    item = (
+        await db.execute(
+            select(ChecklistTemplateItem).where(
+                ChecklistTemplateItem.id == item_id,
+                ChecklistTemplateItem.template_id == template_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Пункт не найден")
+
+    item.title = data.title.strip()
+    item.description = data.description
+    item.sort_order = data.sort_order
+    item.is_required = data.is_required
+    item.standard_code = data.standard_code
+
     await db.commit()
     await db.refresh(item)
     return TemplateItemOut.model_validate(item)
