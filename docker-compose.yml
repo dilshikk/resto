@@ -34,7 +34,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD:-mado_password}@db:5432/mado_checklist
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3000,https://yourdomain.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://yourdomain.com}
     depends_on:
       db:
         condition: service_healthy
@@ -47,7 +47,7 @@ services:
       dockerfile: Dockerfile
     restart: always
     ports:
-      - "3000:80"
+      - "3001:80"
     depends_on:
       - backend
 
