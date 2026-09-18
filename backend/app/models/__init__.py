@@ -7,6 +7,7 @@ from app.models.issue import Issue, IssueComment
 from app.models.shift import Shift
 from app.models.notification import Notification
 from app.models.photo import Photo
+from app.models.standard import Standard
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
@@ -14,4 +15,5 @@ __all__ = [
     "Issue", "IssueComment",
     "Shift", "Notification",
     "Photo",
+    "Standard",
 ]
