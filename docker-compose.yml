@@ -11,6 +11,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql
+      - ./backend/migrations/002_checklists.sql:/docker-entrypoint-initdb.d/002_checklists.sql
+      - ./backend/migrations/003_issues.sql:/docker-entrypoint-initdb.d/003_issues.sql
+      - ./backend/migrations/004_shifts_notifications.sql:/docker-entrypoint-initdb.d/004_shifts_notifications.sql
+      - ./backend/migrations/005_photos.sql:/docker-entrypoint-initdb.d/005_photos.sql
+      - ./backend/migrations/006_standards.sql:/docker-entrypoint-initdb.d/006_standards.sql
+      - ./backend/migrations/007_audit_logs.sql:/docker-entrypoint-initdb.d/007_audit_logs.sql
+      - ./backend/migrations/008_checklist_item_skip.sql:/docker-entrypoint-initdb.d/008_checklist_item_skip.sql
     ports:
       - "5432:5432"
     healthcheck:
@@ -27,7 +34,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD:-mado_password}@db:5432/mado_checklist
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,https://yourdomain.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3000,https://yourdomain.com}
     depends_on:
       db:
         condition: service_healthy
