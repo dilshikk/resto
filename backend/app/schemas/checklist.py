@@ -49,6 +49,13 @@ class ChecklistCreate(BaseModel):
     date: str  # YYYY-MM-DD
 
 
+class ChecklistItemPhotoOut(BaseModel):
+    id: int
+    url: str
+    uploaded_by_name: str
+    created_at: datetime
+
+
 class ChecklistItemOut(BaseModel):
     id: int
     checklist_id: int
@@ -60,6 +67,7 @@ class ChecklistItemOut(BaseModel):
     completed_by_name: str | None = None
     completed_at: datetime | None = None
     note: str | None = None
+    photos: list[ChecklistItemPhotoOut] = []
 
 
 class ChecklistOut(BaseModel):
