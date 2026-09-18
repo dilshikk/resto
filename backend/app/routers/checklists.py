@@ -14,6 +14,7 @@ from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem, Check
 from app.models.employee import Employee
 from app.models.photo import Photo
 from app.models.role import Role
+from app.models.standard import Standard
 from app.schemas.checklist import (
     ChecklistCreate,
     ChecklistOut,
@@ -79,6 +80,13 @@ async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistIte
             )
         )
 
+    standard_title = None
+    if item.standard_code:
+        standard = (
+            await db.execute(select(Standard).where(Standard.code == item.standard_code))
+        ).scalar_one_or_none()
+        standard_title = standard.title if standard else None
+
     return ChecklistItemOut(
         id=item.id,
         checklist_id=item.checklist_id,
@@ -91,6 +99,8 @@ async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistIte
         completed_at=item.completed_at,
         note=item.note,
         photos=photo_outs,
+        standard_code=item.standard_code,
+        standard_title=standard_title,
     )
 
 
@@ -170,6 +180,7 @@ async def create_checklist(
                 description=ti.description,
                 is_required=ti.is_required,
                 sort_order=ti.sort_order,
+                standard_code=ti.standard_code,
             )
         )
 
