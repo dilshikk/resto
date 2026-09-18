@@ -32,6 +32,8 @@ class ChecklistTemplateItem(Base):
     description: Mapped[str | None] = mapped_column(String(500))
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Optional link to a MADO standard (e.g. "SERVICE-04"), see app/models/standard.py
+    standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
 
 
 class Checklist(Base):
@@ -63,3 +65,5 @@ class ChecklistItem(Base):
     completed_by_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"))
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(String(500))
+    # denormalized from the template item, so historical checklists keep their standard link
+    standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
