@@ -16,6 +16,7 @@ from app.routers import (
     issues,
     shifts,
     notifications,
+    standards,
 )
 
 
@@ -28,7 +29,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.3.0",
+    version="1.4.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
@@ -51,6 +52,7 @@ app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(issues.router, prefix="/api/v1")
 app.include_router(shifts.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(standards.router, prefix="/api/v1")
 
 
 @app.get("/health")
