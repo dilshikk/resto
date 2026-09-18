@@ -65,6 +65,7 @@ class ChecklistItemOut(BaseModel):
     is_required: bool
     sort_order: int
     is_completed: bool
+    is_skipped: bool
     completed_by_name: str | None = None
     completed_at: datetime | None = None
     note: str | None = None
@@ -84,6 +85,7 @@ class ChecklistOut(BaseModel):
     status: str
     total_items: int
     completed_items: int
+    skipped_items: int
     created_at: datetime
 
 
@@ -93,3 +95,22 @@ class ChecklistDetail(ChecklistOut):
 
 class ToggleItemRequest(BaseModel):
     note: str | None = None
+
+
+class SkipItemRequest(BaseModel):
+    note: str | None = None
+
+
+# Returned by GET /checklists/{id}/current-item
+# None means all items are done/skipped → checklist can be completed
+class CurrentItemOut(BaseModel):
+    id: int
+    checklist_id: int
+    title: str
+    description: str | None = None
+    is_required: bool
+    sort_order: int
+    total_items: int
+    current_position: int  # 1-based index among all items
+    standard_code: str | None = None
+    standard_title: str | None = None
