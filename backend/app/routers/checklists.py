@@ -22,6 +22,8 @@ from app.schemas.checklist import (
     ChecklistDetail,
     ChecklistItemOut,
     ChecklistItemPhotoOut,
+    CurrentItemOut,
+    SkipItemRequest,
     ToggleItemRequest,
 )
 
@@ -30,6 +32,8 @@ router = APIRouter(prefix="/checklists", tags=["checklists"])
 UPLOAD_DIR = Path("/tmp/mado_uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
     branch = (
@@ -50,6 +54,7 @@ async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
         status=cl.status,
         total_items=len(items),
         completed_items=sum(1 for i in items if i.is_completed),
+        skipped_items=sum(1 for i in items if i.is_skipped),
         created_at=cl.created_at,
     )
 
@@ -96,6 +101,7 @@ async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistIte
         is_required=item.is_required,
         sort_order=item.sort_order,
         is_completed=item.is_completed,
+        is_skipped=item.is_skipped,
         completed_by_name=completed_by_name,
         completed_at=item.completed_at,
         note=item.note,
@@ -104,6 +110,53 @@ async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistIte
         standard_title=standard_title,
     )
 
+
+async def _get_ordered_items(checklist_id: int, db: AsyncSession) -> list[ChecklistItem]:
+    """Return all items for a checklist sorted by sort_order."""
+    res = await db.execute(
+        select(ChecklistItem)
+        .where(ChecklistItem.checklist_id == checklist_id)
+        .order_by(ChecklistItem.sort_order)
+    )
+    return list(res.scalars().all())
+
+
+def _is_item_pending(item: ChecklistItem) -> bool:
+    """True if this item still needs action (not completed and not skipped)."""
+    return not item.is_completed and not item.is_skipped
+
+
+def _find_current_item(items: list[ChecklistItem]) -> ChecklistItem | None:
+    """Return the first item that is still pending, respecting sort_order."""
+    for item in items:
+        if _is_item_pending(item):
+            return item
+    return None
+
+
+async def _assert_previous_required_done(
+    item: ChecklistItem,
+    items: list[ChecklistItem],
+) -> None:
+    """
+    Raise HTTP 400 if any required item that comes before `item` (by sort_order)
+    is still pending. This enforces the step-by-step rule: you cannot act on a
+    later step while an earlier required step is unfinished.
+    """
+    for other in items:
+        if other.sort_order >= item.sort_order:
+            break
+        if other.is_required and _is_item_pending(other):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Нельзя пропустить шаг: сначала выполните обязательный пункт "
+                    f"«{other.title}» (шаг {other.sort_order + 1})"
+                ),
+            )
+
+
+# ── List / create ─────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[ChecklistOut])
 async def list_checklists(
@@ -195,6 +248,8 @@ async def create_checklist(
     return await _build_out(cl, db)
 
 
+# ── Detail ────────────────────────────────────────────────────────────────────
+
 @router.get("/{checklist_id}", response_model=ChecklistDetail)
 async def get_checklist(
     checklist_id: int,
@@ -211,13 +266,7 @@ async def get_checklist(
         await db.execute(select(Branch).where(Branch.id == cl.branch_id))
     ).scalar_one_or_none()
 
-    items_res = await db.execute(
-        select(ChecklistItem)
-        .where(ChecklistItem.checklist_id == cl.id)
-        .order_by(ChecklistItem.sort_order)
-    )
-    items = items_res.scalars().all()
-
+    items = await _get_ordered_items(checklist_id, db)
     item_outs = [await _build_item_out(item, db) for item in items]
 
     return ChecklistDetail(
@@ -231,10 +280,62 @@ async def get_checklist(
         status=cl.status,
         total_items=len(items),
         completed_items=sum(1 for i in items if i.is_completed),
+        skipped_items=sum(1 for i in items if i.is_skipped),
         created_at=cl.created_at,
         items=item_outs,
     )
 
+
+# ── Step-by-step: current item ────────────────────────────────────────────────
+
+@router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
+async def get_current_item(
+    checklist_id: int,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns the next pending item (first item that is neither completed nor skipped).
+    Returns null when all items are done/skipped — the checklist is ready to complete.
+    """
+    cl = (
+        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
+    ).scalar_one_or_none()
+    if not cl:
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    if cl.status == "completed":
+        return None
+
+    items = await _get_ordered_items(checklist_id, db)
+    item = _find_current_item(items)
+    if item is None:
+        return None
+
+    standard_title = None
+    if item.standard_code:
+        standard = (
+            await db.execute(select(Standard).where(Standard.code == item.standard_code))
+        ).scalar_one_or_none()
+        standard_title = standard.title if standard else None
+
+    # 1-based position among all items
+    position = next(i for i, it in enumerate(items, 1) if it.id == item.id)
+
+    return CurrentItemOut(
+        id=item.id,
+        checklist_id=item.checklist_id,
+        title=item.title,
+        description=item.description,
+        is_required=item.is_required,
+        sort_order=item.sort_order,
+        total_items=len(items),
+        current_position=position,
+        standard_code=item.standard_code,
+        standard_title=standard_title,
+    )
+
+
+# ── Step-by-step: complete a single item ──────────────────────────────────────
 
 @router.patch("/{checklist_id}/items/{item_id}/toggle")
 async def toggle_item(
@@ -263,8 +364,14 @@ async def toggle_item(
     if not item:
         raise HTTPException(status_code=404, detail="Пункт не найден")
 
+    # Step-by-step guard: cannot complete/uncomplete this item while an earlier
+    # required item is still pending.
+    items = await _get_ordered_items(checklist_id, db)
+    await _assert_previous_required_done(item, items)
+
     item.is_completed = not item.is_completed
     if item.is_completed:
+        item.is_skipped = False  # completing clears any previous skip
         item.completed_by_employee_id = current.id
         item.completed_at = datetime.now(timezone.utc)
         if body.note:
@@ -284,8 +391,77 @@ async def toggle_item(
     )
 
     await db.commit()
-    return {"is_completed": item.is_completed}
+    return {"is_completed": item.is_completed, "is_skipped": item.is_skipped}
 
+
+# ── Step-by-step: skip an optional item ───────────────────────────────────────
+
+@router.post("/{checklist_id}/items/{item_id}/skip")
+async def skip_item(
+    checklist_id: int,
+    item_id: int,
+    body: SkipItemRequest,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Skip an optional (is_required=False) item.
+    Required items cannot be skipped — a 400 is returned instead.
+    Also blocked when any earlier required item is still pending.
+    """
+    cl = (
+        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
+    ).scalar_one_or_none()
+    if not cl:
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    if cl.status == "completed":
+        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
+
+    item = (
+        await db.execute(
+            select(ChecklistItem).where(
+                ChecklistItem.id == item_id,
+                ChecklistItem.checklist_id == checklist_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Пункт не найден")
+
+    if item.is_required:
+        raise HTTPException(
+            status_code=400,
+            detail="Этот пункт обязателен и не может быть пропущен",
+        )
+
+    if item.is_completed:
+        raise HTTPException(
+            status_code=400,
+            detail="Пункт уже выполнен. Отмените выполнение перед тем, как пропустить.",
+        )
+
+    # Step-by-step guard: even for optional items, earlier required steps must be done first
+    items = await _get_ordered_items(checklist_id, db)
+    await _assert_previous_required_done(item, items)
+
+    item.is_skipped = True
+    if body.note:
+        item.note = body.note
+
+    await log_action(
+        db,
+        actor_id=current.id,
+        action="task.skipped",
+        entity_type="checklist_item",
+        entity_id=item.id,
+        metadata={"checklist_id": checklist_id, "title": item.title, "note": item.note},
+    )
+
+    await db.commit()
+    return {"is_skipped": True}
+
+
+# ── Complete the whole checklist ──────────────────────────────────────────────
 
 @router.post("/{checklist_id}/complete")
 async def complete_checklist(
@@ -293,11 +469,31 @@ async def complete_checklist(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Mark the checklist as completed.
+    Blocked if any required item is still pending (not completed).
+    Optional items that were skipped are allowed.
+    """
     cl = (
         await db.execute(select(Checklist).where(Checklist.id == checklist_id))
     ).scalar_one_or_none()
     if not cl:
         raise HTTPException(status_code=404, detail="Чек-лист не найден")
+
+    items = await _get_ordered_items(checklist_id, db)
+
+    # Find any required item that was neither completed nor skipped
+    # (required items cannot be skipped, but we check both flags for safety)
+    pending_required = [
+        i for i in items if i.is_required and _is_item_pending(i)
+    ]
+    if pending_required:
+        titles = ", ".join(f"«{i.title}»" for i in pending_required[:3])
+        raise HTTPException(
+            status_code=400,
+            detail=f"Нельзя завершить: не выполнены обязательные пункты: {titles}",
+        )
+
     cl.status = "completed"
     await log_action(
         db, actor_id=current.id, action="checklist.completed", entity_type="checklist", entity_id=cl.id,
@@ -306,7 +502,7 @@ async def complete_checklist(
     return {"ok": True}
 
 
-# ── photo confirmations ──────────────────────────────────────────────────────
+# ── Photo confirmations ───────────────────────────────────────────────────────
 
 @router.post("/{checklist_id}/items/{item_id}/photos", response_model=ChecklistItemPhotoOut)
 async def upload_item_photo(
@@ -384,7 +580,6 @@ async def delete_item_photo(
     ).scalar_one_or_none()
     if not photo:
         raise HTTPException(status_code=404, detail="Фото не найдено")
-    # Only the uploader or a manager can remove a photo.
     if photo.uploaded_by_employee_id != current.id:
         role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
         if not role or role.permission_level < 1:
