@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.database import get_db
 from app.models.employee import Employee, EmployeeAccount
 from app.models.user import User
 from app.models.role import Role
+from app.models.revoked_token import RevokedToken
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -29,15 +31,52 @@ def hash_password(password: str) -> str:
 def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire, "type": "access"})
+    to_encode.update({"exp": expire, "type": "access", "jti": uuid.uuid4().hex})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(data: dict[str, Any]) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
+    to_encode.update({"exp": expire, "type": "refresh", "jti": uuid.uuid4().hex})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+async def is_token_revoked(jti: str, db: AsyncSession) -> bool:
+    row = (await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))).scalar_one_or_none()
+    return row is not None
+
+
+async def revoke_token(payload: dict[str, Any], db: AsyncSession) -> None:
+    """
+    Add a decoded token's jti to the denylist so it's rejected on every
+    subsequent request even though it hasn't expired yet. Silently does
+    nothing if the payload has no jti (e.g. a token minted before this
+    denylist existed) or the jti is already revoked.
+    """
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return
+    existing = (await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))).scalar_one_or_none()
+    if existing:
+        return
+    db.add(RevokedToken(jti=jti, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc)))
+
+
+def decode_token(token: str, expected_type: str) -> dict[str, Any]:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        if payload.get("type") != expected_type or not payload.get("sub"):
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    return payload
 
 
 async def get_current_web_user(
@@ -54,23 +93,22 @@ async def get_current_web_user(
     there because it 403s any user without an existing EmployeeAccount,
     which makes claiming impossible in the first place.
     """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id: int | None = payload.get("sub")
-        if user_id is None or payload.get("type") != "access":
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    payload = decode_token(token, "access")
+    if payload.get("jti") and await is_token_revoked(payload["jti"], db):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия завершена, войдите снова",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == int(payload["sub"])))
     user = result.scalar_one_or_none()
     if not user:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
@@ -83,16 +121,16 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id: int | None = payload.get("sub")
-        if user_id is None or payload.get("type") != "access":
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    payload = decode_token(token, "access")
+    if payload.get("jti") and await is_token_revoked(payload["jti"], db):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия завершена, войдите снова",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     result = await db.execute(
-        select(User).where(User.id == int(user_id))
+        select(User).where(User.id == int(payload["sub"]))
     )
     user = result.scalar_one_or_none()
     if not user:
