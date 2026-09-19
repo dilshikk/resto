@@ -24,7 +24,7 @@ const STATUS_COLOR: Record<string, string> = {
   fired: "bg-destructive/15 text-destructive",
 };
 
-const TELEGRAM_BOT_USERNAME = "mado_checklist_bot";
+const TELEGRAM_BOT_USERNAME = "mado_ibot";
 
 type FormValue = {
   full_name: string;
