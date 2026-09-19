@@ -6,11 +6,12 @@ import {
   createEmployee,
   updateEmployee,
   regenerateInviteCode,
+  unlinkEmployeeAccount,
   listRoles,
 } from "@/api/employees.ts";
 import type { Employee, EmployeeCreate, EmployeeUpdate } from "@/api/employees.ts";
 import { listBranches } from "@/api/branches.ts";
-import { Users, Plus, KeyRound, Copy, Pencil, Send } from "lucide-react";
+import { Users, Plus, KeyRound, Copy, Pencil, Send, Unlink } from "lucide-react";
 
 const STATUS_LABEL: Record<string, string> = {
   active: "Активен",
@@ -253,6 +254,48 @@ function InviteDialog({
   );
 }
 
+function UnlinkAccountDialog({
+  employee,
+  onClose,
+  onConfirm,
+  submitting,
+}: {
+  employee: Employee;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  submitting: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h2 className="text-lg font-semibold">Отвязать аккаунт</h2>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Учётная запись, привязанная к сотруднику <strong>{employee.full_name}</strong>, будет отвязана. Сотрудник
+            сможет привязать новый аккаунт по коду приглашения. Текущий вход для старого аккаунта перестанет работать.
+          </p>
+          <div className="flex gap-2 justify-end pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={submitting}
+              className="rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {submitting ? "Отвязываем..." : "Отвязать"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function EmployeesPage() {
   const qc = useQueryClient();
   const { data: employees, isLoading: empLoading } = useQuery({ queryKey: ["employees"], queryFn: () => listEmployees() });
@@ -267,10 +310,15 @@ export default function EmployeesPage() {
     mutationFn: ({ id, d }: { id: number; d: EmployeeUpdate }) => updateEmployee(id, d),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
+  const unlinkMut = useMutation({
+    mutationFn: (id: number) => unlinkEmployeeAccount(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+  });
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editingEmp, setEditingEmp] = useState<Employee | null>(null);
   const [inviteEmp, setInviteEmp] = useState<Employee | null>(null);
+  const [unlinkEmp, setUnlinkEmp] = useState<Employee | null>(null);
 
   const roleOptions = useMemo(() => (roles ?? []).map((r) => ({ id: r.id, name_ru: r.name_ru })), [roles]);
   const branchOptions = useMemo(() => (branches ?? []).map((b) => ({ id: b.id, name: b.name })), [branches]);
@@ -321,6 +369,21 @@ export default function EmployeesPage() {
     }
   };
 
+  const handleUnlink = async () => {
+    if (!unlinkEmp) return;
+    try {
+      await unlinkMut.mutateAsync(unlinkEmp.id);
+      toast.success("Аккаунт отвязан");
+      setUnlinkEmp(null);
+    } catch (err: unknown) {
+      const detail =
+        err && typeof err === "object" && "response" in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      toast.error(detail ?? "Не удалось отвязать аккаунт. Возможно, у вас недостаточно прав.");
+    }
+  };
+
   const loading = empLoading || rolesLoading || branchesLoading;
 
   return (
@@ -363,6 +426,7 @@ export default function EmployeesPage() {
                 <th className="px-4 py-3 text-left font-medium">Филиал</th>
                 <th className="px-4 py-3 text-left font-medium">Статус</th>
                 <th className="px-4 py-3 text-left font-medium">Telegram</th>
+                <th className="px-4 py-3 text-left font-medium">Аккаунт</th>
                 <th className="px-4 py-3 text-right font-medium">Действия</th>
               </tr>
             </thead>
@@ -384,10 +448,25 @@ export default function EmployeesPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${emp.has_claimed_account ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
+                      {emp.has_claimed_account ? "Привязан" : "Не привязан"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       {!emp.telegram_linked && (
                         <button type="button" onClick={() => setInviteEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Приглашение в Telegram">
                           <KeyRound className="size-4" />
+                        </button>
+                      )}
+                      {emp.has_claimed_account && (
+                        <button
+                          type="button"
+                          onClick={() => setUnlinkEmp(emp)}
+                          className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          title="Отвязать аккаунт"
+                        >
+                          <Unlink className="size-4" />
                         </button>
                       )}
                       <button type="button" onClick={() => setEditingEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Редактировать">
@@ -435,6 +514,15 @@ export default function EmployeesPage() {
 
       {inviteEmp && (
         <InviteDialog employee={inviteEmp} onClose={() => setInviteEmp(null)} />
+      )}
+
+      {unlinkEmp && (
+        <UnlinkAccountDialog
+          employee={unlinkEmp}
+          onClose={() => setUnlinkEmp(null)}
+          onConfirm={handleUnlink}
+          submitting={unlinkMut.isPending}
+        />
       )}
     </div>
   );
