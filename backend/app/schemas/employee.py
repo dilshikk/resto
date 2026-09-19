@@ -11,8 +11,19 @@ class EmployeeCreate(BaseModel):
     hired_at: str | None = None
 
 
-class EmployeeUpdate(EmployeeCreate):
-    status: str = "active"
+class EmployeeUpdate(BaseModel):
+    """
+    True partial-update schema: every field is Optional so the client only
+    has to send the fields it wants to change.  The router applies only the
+    fields present in model_fields_set, leaving everything else untouched.
+    """
+    full_name: str | None = None
+    phone: str | None = None
+    role_id: int | None = None
+    primary_branch_id: int | None = None
+    additional_branch_ids: list[int] | None = None
+    status: str | None = None
+    hired_at: str | None = None
 
 
 class EmployeeOut(BaseModel):
