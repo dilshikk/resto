@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -12,13 +10,17 @@ from app.auth import (
     create_refresh_token,
     hash_password,
     get_current_user,
+    decode_token,
+    is_token_revoked,
+    revoke_token,
+    oauth2_scheme,
 )
 from app.config import settings
 from app.database import get_db
 from app.models.user import User
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
-from app.schemas.auth import TokenResponse, RefreshRequest, CreateUserRequest
+from app.schemas.auth import TokenResponse, RefreshRequest, LogoutRequest, CreateUserRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -42,26 +44,50 @@ async def login(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        payload = jwt.decode(body.refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id or payload.get("type") != "refresh":
-            raise ValueError
-    except (JWTError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    payload = decode_token(body.refresh_token, "refresh")
+    if payload.get("jti") and await is_token_revoked(payload["jti"], db):
+        raise HTTPException(status_code=401, detail="Refresh token revoked")
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == int(payload["sub"])))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # Rotate: the old refresh token must not be usable again once a new pair
+    # has been issued from it.
+    await revoke_token(payload, db)
+
     access_token = create_access_token({"sub": str(user.id)})
     new_refresh = create_refresh_token({"sub": str(user.id)})
+    await db.commit()
     return TokenResponse(access_token=access_token, refresh_token=new_refresh)
 
 
 @router.post("/logout")
-async def logout(_: Employee = Depends(get_current_user)):
+async def logout(
+    body: LogoutRequest | None = None,
+    token: str = Depends(oauth2_scheme),
+    _: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Actually end the session: revoke the access token used to call this
+    endpoint (so it can't be replayed for the rest of its lifetime) and, if
+    the client sends its refresh token, revoke that too (so it can't be used
+    to mint fresh access tokens after logout).
+    """
+    access_payload = decode_token(token, "access")
+    await revoke_token(access_payload, db)
+
+    if body and body.refresh_token:
+        try:
+            refresh_payload = decode_token(body.refresh_token, "refresh")
+            await revoke_token(refresh_payload, db)
+        except HTTPException:
+            # An already-invalid/expired refresh token needs no revocation.
+            pass
+
+    await db.commit()
     return {"ok": True}
 
 
