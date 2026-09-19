@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -30,14 +30,47 @@ from app.schemas.checklist import (
 
 router = APIRouter(prefix="/checklists", tags=["checklists"])
 
-# Was hardcoded to /tmp/mado_uploads, which docker discards on every container
-# restart/rebuild since /tmp isn't backed by a persistent volume — every photo
-# ever uploaded vanished (while the Photo rows in the DB stayed, pointing at
-# files that no longer existed). Now configurable via PHOTOS_DIR, which
-# docker-compose mounts as a named volume (uploads_data) that survives
-# restarts and rebuilds.
 UPLOAD_DIR = Path(settings.PHOTOS_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── Deadline helpers ──────────────────────────────────────────────────────────
+
+def _compute_deadline_status(cl: Checklist) -> str | None:
+    """
+    Derive the deadline status from stored timestamps — no DB queries needed.
+
+    Returns one of:
+      "ON_TIME"       – completed before or exactly at due_at
+      "OVERDUE"       – due_at has passed and checklist is not completed,
+                        OR was completed after due_at
+      "NOT_COMPLETED" – due_at passed more than 24 h ago and still not completed
+                        (period is definitively closed)
+      None            – no deadline was set for this checklist (legacy / template
+                        without deadline_offset_minutes)
+    """
+    if cl.due_at is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    if cl.completed_at is not None:
+        # Completed: ON_TIME if finished before or at deadline, OVERDUE otherwise
+        if cl.completed_at <= cl.due_at:
+            return "ON_TIME"
+        return "OVERDUE"
+
+    # Not completed yet
+    if now <= cl.due_at:
+        # Still within the window — treat as open (no terminal status yet)
+        return None  # frontend shows countdown
+
+    # Deadline passed, not completed
+    # After 24 h grace period → permanently NOT_COMPLETED
+    if now > cl.due_at + timedelta(hours=24):
+        return "NOT_COMPLETED"
+
+    return "OVERDUE"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -90,6 +123,10 @@ async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
         completed_items=sum(1 for i in items if i.is_completed),
         skipped_items=sum(1 for i in items if i.is_skipped),
         created_at=cl.created_at,
+        started_at=cl.started_at,
+        due_at=cl.due_at,
+        completed_at=cl.completed_at,
+        deadline_status=_compute_deadline_status(cl),
     )
 
 
@@ -255,6 +292,13 @@ async def create_checklist(
     if not tpl:
         raise HTTPException(status_code=404, detail="Шаблон не найден")
 
+    now = datetime.now(timezone.utc)
+    due_at = (
+        now + timedelta(minutes=tpl.deadline_offset_minutes)
+        if tpl.deadline_offset_minutes is not None
+        else None
+    )
+
     cl = Checklist(
         template_id=tpl.id,
         template_name=tpl.name,
@@ -263,6 +307,8 @@ async def create_checklist(
         date=data.date,
         status="open",
         created_by_employee_id=current.id,
+        started_at=now,
+        due_at=due_at,
     )
     db.add(cl)
     await db.flush()
@@ -287,16 +333,19 @@ async def create_checklist(
         )
 
     await log_action(
-        db, actor_id=current.id, action="checklist.created", entity_type="checklist", entity_id=cl.id,
-        metadata={"template_id": tpl.id, "branch_id": data.branch_id, "date": data.date},
+        db,
+        actor_id=current.id,
+        action="checklist.created",
+        entity_type="checklist",
+        entity_id=cl.id,
+        metadata={"template_id": tpl.id, "branch_id": data.branch_id, "due_at": due_at.isoformat() if due_at else None},
     )
-
     await db.commit()
     await db.refresh(cl)
     return await _build_out(cl, db)
 
 
-# ── Detail ──────────────────────────────────────────────────────────────────
+# ── Detail ────────────────────────────────────────────────────────────────────
 
 @router.get("/{checklist_id}", response_model=ChecklistDetail)
 async def get_checklist(
@@ -307,30 +356,17 @@ async def get_checklist(
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
-    branch = (
-        await db.execute(select(Branch).where(Branch.id == cl.branch_id))
-    ).scalar_one_or_none()
+    base = await _build_out(cl, db)
     items = await _get_ordered_items(checklist_id, db)
-    item_outs = [await _build_item_out(i, db) for i in items]
+    item_outs = [await _build_item_out(item, db) for item in items]
 
-    return ChecklistDetail(
-        id=cl.id,
-        template_id=cl.template_id,
-        template_name=cl.template_name,
-        branch_id=cl.branch_id,
-        branch_name=branch.name if branch else "—",
-        shift=cl.shift,
-        date=cl.date,
-        status=cl.status,
-        total_items=len(items),
-        completed_items=sum(1 for i in items if i.is_completed),
-        skipped_items=sum(1 for i in items if i.is_skipped),
-        created_at=cl.created_at,
-        items=item_outs,
-    )
+    return ChecklistDetail(**base.model_dump(), items=item_outs)
 
 
-@router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
+# ── Current item (step-by-step) ───────────────────────────────────────────────
+
+@router.get("/{checklist_id}/current-item",
+            response_model=CurrentItemOut | None)
 async def get_current_item(
     checklist_id: int,
     current: Employee = Depends(get_current_user),
@@ -506,9 +542,13 @@ async def complete_checklist(
     Mark the checklist as completed.
     Blocked if any required item is still pending (not completed).
     Optional items that were skipped are allowed.
+    Sets completed_at to UTC now so deadline_status can be computed correctly.
     """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
+
+    if cl.status == "completed":
+        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
     items = await _get_ordered_items(checklist_id, db)
 
@@ -524,12 +564,16 @@ async def complete_checklist(
             detail=f"Нельзя завершить: не выполнены обязательные пункты: {titles}",
         )
 
+    now = datetime.now(timezone.utc)
     cl.status = "completed"
+    cl.completed_at = now
+
     await log_action(
         db, actor_id=current.id, action="checklist.completed", entity_type="checklist", entity_id=cl.id,
+        metadata={"completed_at": now.isoformat(), "deadline_status": _compute_deadline_status(cl)},
     )
     await db.commit()
-    return {"ok": True}
+    return {"ok": True, "deadline_status": _compute_deadline_status(cl)}
 
 
 # ── Photo confirmations ───────────────────────────────────────────────────────
