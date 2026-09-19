@@ -29,6 +29,7 @@ class EmployeeOut(BaseModel):
     status: str
     invite_code: str
     has_claimed_account: bool
+    telegram_linked: bool
     hired_at: str | None = None
     created_at: datetime
     updated_at: datetime
