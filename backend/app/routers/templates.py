@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.auth import get_current_user, require_manager
 from app.database import get_db
@@ -41,6 +41,22 @@ async def _item_count(template_id: int, db: AsyncSession) -> int:
         select(ChecklistTemplateItem).where(ChecklistTemplateItem.template_id == template_id)
     )
     return len(result.scalars().all())
+
+
+async def _next_sort_order(template_id: int, db: AsyncSession) -> int:
+    """
+    Items added via the "Add item" button in the dashboard don't specify a
+    sort_order, so without this every item would default to 0 and the
+    step-by-step order (and the bot's "Шаг N/M" numbering) would become
+    unstable/undefined. Place new items after the current highest sort_order.
+    """
+    result = await db.execute(
+        select(func.max(ChecklistTemplateItem.sort_order)).where(
+            ChecklistTemplateItem.template_id == template_id
+        )
+    )
+    current_max = result.scalar_one_or_none()
+    return (current_max + 1) if current_max is not None else 0
 
 
 async def _validate_standard_code(standard_code: str | None, db: AsyncSession) -> None:
@@ -119,7 +135,7 @@ async def get_template(
     items_res = await db.execute(
         select(ChecklistTemplateItem)
         .where(ChecklistTemplateItem.template_id == tpl.id)
-        .order_by(ChecklistTemplateItem.sort_order)
+        .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
     )
     items = items_res.scalars().all()
     return TemplateDetail(
@@ -184,11 +200,14 @@ async def add_item(
 ):
     await _get_or_404(template_id, db)
     await _validate_standard_code(data.standard_code, db)
+    # The dashboard's "Add item" button never sends sort_order (it stays at the
+    # schema default of 0), so auto-assign the next slot to keep step order stable.
+    sort_order = data.sort_order if data.sort_order else await _next_sort_order(template_id, db)
     item = ChecklistTemplateItem(
         template_id=template_id,
         title=data.title.strip(),
         description=data.description,
-        sort_order=data.sort_order,
+        sort_order=sort_order,
         is_required=data.is_required,
         standard_code=data.standard_code,
     )
