@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -9,10 +9,10 @@ import {
   completeChecklist,
   listTemplates,
 } from "@/api/checklists.ts";
-import type { Checklist, ChecklistCreate } from "@/api/checklists.ts";
+import type { Checklist, ChecklistCreate, DeadlineStatus } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
 import { getMyProfile } from "@/api/employees.ts";
-import { CheckSquare, Plus, Clock } from "lucide-react";
+import { CheckSquare, Plus, Clock, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
 const SHIFTS = [
@@ -23,6 +23,92 @@ const SHIFTS = [
 
 function todayDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+// ── Deadline helpers ──────────────────────────────────────────────────────
+
+const DEADLINE_CONFIG: Record<
+  NonNullable<DeadlineStatus>,
+  { label: string; className: string; icon: React.ReactNode }
+> = {
+  ON_TIME: {
+    label: "В срок",
+    className: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+    icon: <CheckCircle2 className="size-3" />,
+  },
+  OVERDUE: {
+    label: "Просрочено",
+    className: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+    icon: <AlertTriangle className="size-3" />,
+  },
+  NOT_COMPLETED: {
+    label: "Не выполнено",
+    className: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-400",
+    icon: <XCircle className="size-3" />,
+  },
+};
+
+/** Returns remaining time as "MM:SS" or negative "−MM:SS" string */
+function useCountdown(dueAt: string | null | undefined): string | null {
+  const [display, setDisplay] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!dueAt) return;
+
+    const tick = () => {
+      const diff = new Date(dueAt).getTime() - Date.now();
+      const abs = Math.abs(diff);
+      const h = Math.floor(abs / 3_600_000);
+      const m = Math.floor((abs % 3_600_000) / 60_000);
+      const s = Math.floor((abs % 60_000) / 1_000);
+      const hPart = h > 0 ? `${h}:` : "";
+      const formatted = `${hPart}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+      setDisplay(diff < 0 ? `−${formatted}` : formatted);
+    };
+
+    tick();
+    const id = setInterval(tick, 1_000);
+    return () => clearInterval(id);
+  }, [dueAt]);
+
+  return display;
+}
+
+function DeadlineBadge({ cl }: { cl: Checklist }) {
+  const countdown = useCountdown(cl.status === "open" ? cl.due_at : null);
+
+  if (!cl.due_at) return null;
+
+  // Completed — show final status badge
+  if (cl.deadline_status && cl.status === "completed") {
+    const cfg = DEADLINE_CONFIG[cl.deadline_status];
+    return (
+      <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", cfg.className)}>
+        {cfg.icon}
+        {cfg.label}
+      </span>
+    );
+  }
+
+  // Open with active countdown
+  if (cl.status === "open" && countdown !== null) {
+    const isOverdue = countdown.startsWith("−");
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums",
+          isOverdue
+            ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+            : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
+        )}
+      >
+        <Clock className="size-3" />
+        {isOverdue ? `Просрочено на ${countdown.slice(1)}` : `До дедлайна: ${countdown}`}
+      </span>
+    );
+  }
+
+  return null;
 }
 
 // ── Progress Bar ──────────────────────────────────────────────────────────
@@ -76,18 +162,53 @@ function ChecklistCard({ cl, onClick }: { cl: Checklist; onClick: () => void }) 
           {isComplete ? "Завершён" : "Открыт"}
         </span>
       </div>
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         <Clock className="size-3.5" />
         <span>{shiftLabel}</span>
         <span>·</span>
         <span>{cl.date}</span>
       </div>
+      {/* Deadline badge / countdown */}
+      <DeadlineBadge cl={cl} />
       <ProgressBar total={cl.total_items} done={cl.completed_items} />
     </button>
   );
 }
 
 // ── Checklist Detail Modal ────────────────────────────────────────────────
+
+function DeadlineDetailRow({ cl }: { cl: Checklist }) {
+  const countdown = useCountdown(cl.status === "open" ? cl.due_at : null);
+
+  if (!cl.due_at) return null;
+
+  const dueFormatted = new Date(cl.due_at).toLocaleString("ru-RU", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+
+  const isOverdue = countdown?.startsWith("−");
+
+  return (
+    <div className="shrink-0 border-b bg-muted/20 px-5 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      <span>Дедлайн: <span className="font-medium text-foreground">{dueFormatted}</span></span>
+      {cl.status === "open" && countdown !== null && (
+        <span className={cn("font-medium", isOverdue ? "text-destructive" : "text-amber-600 dark:text-amber-400")}>
+          {isOverdue ? `Просрочено на ${countdown.slice(1)}` : `Осталось: ${countdown}`}
+        </span>
+      )}
+      {cl.deadline_status && cl.status === "completed" && (
+        <span className={cn(
+          "font-medium",
+          cl.deadline_status === "ON_TIME" ? "text-green-600 dark:text-green-400" : "text-destructive",
+        )}>
+          {cl.deadline_status === "ON_TIME" ? "Выполнено в срок" :
+           cl.deadline_status === "OVERDUE" ? "Завершено с опозданием" :
+           "Не выполнено"}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function ChecklistDetailModal({
   checklistId,
@@ -149,6 +270,9 @@ function ChecklistDetailModal({
             ✕
           </button>
         </div>
+
+        {/* Deadline row */}
+        {detail && <DeadlineDetailRow cl={detail} />}
 
         {/* Progress bar */}
         {detail && (
@@ -258,6 +382,8 @@ function CreateChecklistModal({ onClose }: { onClose: () => void }) {
     date: todayDate(),
   });
 
+  const selectedTemplate = templates?.find((t) => t.id === form.template_id);
+
   const mut = useMutation({
     mutationFn: (data: ChecklistCreate) => createChecklist(data),
     onSuccess: () => {
@@ -298,6 +424,14 @@ function CreateChecklistModal({ onClose }: { onClose: () => void }) {
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
+            {selectedTemplate?.deadline_offset_minutes != null && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock className="size-3" />
+                Дедлайн: {selectedTemplate.deadline_offset_minutes >= 60
+                  ? `${Math.floor(selectedTemplate.deadline_offset_minutes / 60)} ч ${selectedTemplate.deadline_offset_minutes % 60 > 0 ? `${selectedTemplate.deadline_offset_minutes % 60} мин` : ""}`
+                  : `${selectedTemplate.deadline_offset_minutes} мин`} после создания
+              </p>
+            )}
           </div>
           <div className="space-y-1.5">
             <label className="text-sm font-medium">Филиал</label>
