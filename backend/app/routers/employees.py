@@ -36,13 +36,8 @@ async def _get_own_role(current: Employee, db: AsyncSession) -> Role | None:
 
 async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSession) -> None:
     """
-    Raise HTTP 403/404 unless `current` is allowed to grant `role_id` to someone
-    (themselves included, via create/update employee).
-
-    Rule: nobody can assign a role with a higher permission_level than their own.
-    This blocks privilege escalation, e.g. a manager (level 1) granting a
-    director role (level 3) to themselves or a colleague. A director (level 3)
-    may still assign up to and including the director role.
+    Raise HTTP 403/404 unless `current` is allowed to grant `role_id` to someone.
+    Nobody can assign a role with a higher permission_level than their own.
     """
     target_role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not target_role:
@@ -66,10 +61,10 @@ async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
         full_name=emp.full_name,
         phone=emp.phone,
         role_id=emp.role_id,
-        role_name=role.name_ru if role else "\u2014",
+        role_name=role.name_ru if role else "—",
         role_level=role.permission_level if role else 0,
         primary_branch_id=emp.primary_branch_id,
-        primary_branch_name=branch.name if branch else "\u2014",
+        primary_branch_name=branch.name if branch else "—",
         additional_branch_ids=emp.additional_branch_ids or [],
         status=emp.status,
         invite_code=emp.invite_code,
@@ -100,11 +95,11 @@ async def get_my_profile(
         full_name=current.full_name,
         status=current.status,
         role_id=current.role_id,
-        role_name=role.name_ru if role else "\u2014",
+        role_name=role.name_ru if role else "—",
         role_code=role.code if role else "",
         role_level=role.permission_level if role else 0,
         primary_branch_id=current.primary_branch_id,
-        primary_branch_name=branch.name if branch else "\u2014",
+        primary_branch_name=branch.name if branch else "—",
         additional_branch_ids=current.additional_branch_ids or [],
     )
 
@@ -121,8 +116,6 @@ async def list_employees(
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
 
     if branch_id is not None and not can_all and branch_id not in own_allowed_branches:
-        # A manager who is not a supervisor/director cannot list employees of a
-        # branch they don't belong to, even by passing branch_id explicitly.
         raise HTTPException(status_code=403, detail="Нет доступа к сотрудникам другого филиала")
 
     result = await db.execute(select(Employee))
@@ -192,18 +185,28 @@ async def update_employee(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    True partial update: only fields explicitly sent in the request body are
+    written to the database.  Fields absent from the payload are left unchanged,
+    so a frontend that only sends {"status": "inactive"} will never accidentally
+    wipe additional_branch_ids or any other field.
+    """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
     role = await _get_own_role(current, db)
     can_all = bool(role and role.permission_level >= 2)
+
+    # --- branch-access guard (only relevant when branch fields are changing) ---
+    new_primary = data.primary_branch_id if data.primary_branch_id is not None else emp.primary_branch_id
+    new_additional = data.additional_branch_ids if data.additional_branch_ids is not None else (emp.additional_branch_ids or [])
+
     if not can_all:
         own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
         existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
-        target_branches = {data.primary_branch_id, *(data.additional_branch_ids or [])}
-        # Must already have access to this employee's current branch(es), and
-        # must not move them into a branch outside the caller's own access.
+        target_branches = {new_primary, *new_additional}
+
         if not (existing_branches & own_allowed_branches):
             raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
         if not target_branches <= own_allowed_branches:
@@ -212,18 +215,25 @@ async def update_employee(
                 detail="Нельзя перевести сотрудника в филиал, к которому у вас нет доступа",
             )
 
-    if data.role_id != emp.role_id:
-        # Changing someone's role is where privilege escalation would happen:
-        # never let a caller grant a role above their own permission level.
+    # --- privilege-escalation guard (only when role is changing) ---
+    if data.role_id is not None and data.role_id != emp.role_id:
         await _assert_can_assign_role(data.role_id, current, db)
 
-    emp.full_name = data.full_name.strip()
-    emp.phone = data.phone
-    emp.role_id = data.role_id
-    emp.primary_branch_id = data.primary_branch_id
-    emp.additional_branch_ids = data.additional_branch_ids
-    emp.status = data.status
-    if data.hired_at is not None:
+    # --- apply only the fields that were actually sent ---
+    sent = data.model_fields_set
+    if "full_name" in sent and data.full_name is not None:
+        emp.full_name = data.full_name.strip()
+    if "phone" in sent:
+        emp.phone = data.phone
+    if "role_id" in sent and data.role_id is not None:
+        emp.role_id = data.role_id
+    if "primary_branch_id" in sent and data.primary_branch_id is not None:
+        emp.primary_branch_id = data.primary_branch_id
+    if "additional_branch_ids" in sent and data.additional_branch_ids is not None:
+        emp.additional_branch_ids = data.additional_branch_ids
+    if "status" in sent and data.status is not None:
+        emp.status = data.status
+    if "hired_at" in sent:
         emp.hired_at = data.hired_at
 
     await db.commit()
@@ -251,8 +261,6 @@ async def regenerate_invite(
 
     new_code = _gen_invite()
     emp.invite_code = new_code
-    # A fresh code invalidates any previous Telegram link, so the new code can be
-    # claimed again (e.g. employee lost their phone / lost access to the old chat).
     emp.telegram_id = None
     await db.commit()
     return {"invite_code": new_code}
@@ -264,19 +272,6 @@ async def claim_profile(
     current_user: User = Depends(get_current_web_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Link the logged-in web account to an employee profile via invite code.
-
-    Rules:
-    - If this web account is already linked to the *same* employee the code
-      points to, return the current link as-is (idempotent — no duplicate row).
-    - If this web account is already linked to a *different* employee, reject:
-      one web login maps to exactly one employee profile.
-    - If the target employee is already linked to a *different* web account,
-      reject. Re-assigning a profile to a new account is an admin action
-      (regenerate-invite clears telegram_id; a manager can be added here to
-      clear the web link too), not something the claiming user can force.
-    """
     code = body.invite_code.strip().upper()
     target = (await db.execute(select(Employee).where(Employee.invite_code == code))).scalar_one_or_none()
     if not target:
@@ -290,7 +285,6 @@ async def claim_profile(
 
     if own_account:
         if own_account.employee_id == target.id:
-            # Already claimed by this exact account — idempotent success, no duplicate.
             return await _build_employee_out(target, db)
         raise HTTPException(
             status_code=409,
@@ -322,12 +316,6 @@ async def unlink_employee_account(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Remove the web-account link for an employee so a new account can claim
-    their profile (e.g. they lost access to the original login).
-    Only a manager whose own role level is >= the target employee's role
-    level can unlink them, mirroring the rule for role assignment.
-    """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
