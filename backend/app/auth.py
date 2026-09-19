@@ -42,6 +42,34 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+def create_pre_auth_token(user_id: int) -> str:
+    """
+    Short-lived (5 min) single-purpose token issued when a user with 2FA
+    enabled provides correct credentials.  It can ONLY be exchanged at
+    POST /auth/2fa/verify — it is not a valid access token and will be
+    rejected by get_current_user / get_current_web_user.
+    """
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    payload = {
+        "sub": str(user_id),
+        "type": "pre_auth",
+        "exp": expire,
+        "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_pre_auth_token(token: str) -> dict[str, Any]:
+    """Decode and validate a pre-auth token; raise 401 on any problem."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Недействительный pre-auth токен")
+    if payload.get("type") != "pre_auth" or not payload.get("sub"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Недействительный pre-auth токен")
+    return payload
+
+
 async def is_token_revoked(jti: str, db: AsyncSession) -> bool:
     row = (await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))).scalar_one_or_none()
     return row is not None
