@@ -1,5 +1,14 @@
 import { apiClient } from "./client.ts";
 
+export type DeadlineMetrics = {
+  on_time: number;
+  overdue: number;
+  not_completed: number;
+  no_deadline: number;
+  on_time_pct: number | null;
+  avg_completion_minutes: number | null;
+};
+
 export type Summary = {
   date_from: string;
   date_to: string;
@@ -10,6 +19,7 @@ export type Summary = {
   completed_items: number;
   item_completion_pct: number;
   missed_required_items: number;
+  deadline: DeadlineMetrics;
 };
 
 export type DayPoint = {
@@ -17,6 +27,9 @@ export type DayPoint = {
   total: number;
   completed: number;
   pct: number;
+  on_time: number;
+  overdue: number;
+  not_completed: number;
 };
 
 export type BranchRank = {
@@ -25,6 +38,9 @@ export type BranchRank = {
   total: number;
   completed: number;
   pct: number;
+  on_time: number;
+  overdue: number;
+  not_completed: number;
 };
 
 export type Violation = {
