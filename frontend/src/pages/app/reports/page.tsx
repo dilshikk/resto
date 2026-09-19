@@ -14,7 +14,10 @@ import {
 } from "recharts";
 import { getSummary, getByDay, getBranchesRanking, getViolations, buildExportUrl } from "@/api/analytics.ts";
 import { listBranches } from "@/api/branches.ts";
-import { Download, TrendingUp, CheckSquare, AlertTriangle, ClipboardList } from "lucide-react";
+import {
+  Download, TrendingUp, CheckSquare, AlertTriangle, ClipboardList,
+  Clock, CheckCircle2, XCircle, Timer,
+} from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
 // ── date helpers ───────────────────────────────────────────────────────────
@@ -75,6 +78,70 @@ function DayTooltip({ active, payload, label }: { active?: boolean; payload?: { 
   );
 }
 
+// ── deadline status row ─────────────────────────────────────────────────────
+
+function DeadlineStatsRow({
+  onTime,
+  overdue,
+  notCompleted,
+  onTimePct,
+  avgMin,
+}: {
+  onTime: number;
+  overdue: number;
+  notCompleted: number;
+  onTimePct: number | null;
+  avgMin: number | null;
+}) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="rounded-xl border bg-card p-4 shadow-sm space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <CheckCircle2 className="size-4 text-green-500" />
+          <span>В срок</span>
+        </div>
+        <p className="text-2xl font-bold text-green-600 dark:text-green-400">{onTime}</p>
+      </div>
+      <div className="rounded-xl border bg-card p-4 shadow-sm space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AlertTriangle className="size-4 text-destructive" />
+          <span>Просрочено</span>
+        </div>
+        <p className="text-2xl font-bold text-destructive">{overdue}</p>
+      </div>
+      <div className="rounded-xl border bg-card p-4 shadow-sm space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <XCircle className="size-4 text-zinc-400" />
+          <span>Не выполнено</span>
+        </div>
+        <p className="text-2xl font-bold text-zinc-500 dark:text-zinc-400">{notCompleted}</p>
+      </div>
+      <div className="rounded-xl border bg-card p-4 shadow-sm space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <TrendingUp className="size-4 text-blue-500" />
+          <span>% в срок</span>
+        </div>
+        <p className="text-2xl font-bold">
+          {onTimePct !== null ? `${onTimePct}%` : <span className="text-muted-foreground text-base">—</span>}
+        </p>
+      </div>
+      <div className="rounded-xl border bg-card p-4 shadow-sm space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Timer className="size-4 text-amber-500" />
+          <span>Среднее время</span>
+        </div>
+        <p className="text-2xl font-bold">
+          {avgMin !== null
+            ? avgMin >= 60
+              ? `${Math.floor(avgMin / 60)}ч ${Math.round(avgMin % 60)}м`
+              : `${avgMin}м`
+            : <span className="text-muted-foreground text-base">—</span>}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── page ────────────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
@@ -106,13 +173,12 @@ export default function ReportsPage() {
     queryFn: () => getViolations({ ...params, limit: 10 }),
   });
 
-  // For chart: show only every Nth label to avoid crowding
   const chartData = useMemo(() => {
     if (!byDay) return [];
     const step = byDay.length > 30 ? 3 : 1;
     return byDay.map((d, i) => ({
       ...d,
-      label: i % step === 0 ? d.date.slice(5) : "", // MM-DD
+      label: i % step === 0 ? d.date.slice(5) : "",
     }));
   }, [byDay]);
 
@@ -151,7 +217,6 @@ export default function ReportsPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* Presets */}
         <div className="flex rounded-lg border overflow-hidden">
           {PRESETS.map((p) => (
             <button
@@ -169,7 +234,6 @@ export default function ReportsPage() {
             </button>
           ))}
         </div>
-        {/* Branch filter */}
         <select
           className="rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
           value={branchId ?? ""}
@@ -217,6 +281,23 @@ export default function ReportsPage() {
             label="Пропущено обязательных"
             value={summary.missed_required_items}
             sub="невыполненных пунктов"
+          />
+        </div>
+      )}
+
+      {/* Deadline KPI row */}
+      {summary && (summary.deadline.on_time > 0 || summary.deadline.overdue > 0 || summary.deadline.not_completed > 0) && (
+        <div className="space-y-3">
+          <h2 className="font-semibold flex items-center gap-2 text-sm text-muted-foreground uppercase tracking-wide">
+            <Clock className="size-4" />
+            Контроль сроков
+          </h2>
+          <DeadlineStatsRow
+            onTime={summary.deadline.on_time}
+            overdue={summary.deadline.overdue}
+            notCompleted={summary.deadline.not_completed}
+            onTimePct={summary.deadline.on_time_pct}
+            avgMin={summary.deadline.avg_completion_minutes}
           />
         </div>
       )}
@@ -295,7 +376,12 @@ export default function ReportsPage() {
                       </span>
                       <span className="text-sm font-medium truncate">{b.branch_name}</span>
                     </div>
-                    <span className="shrink-0 text-sm font-semibold">{b.pct}%</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {b.overdue > 0 && (
+                        <span className="text-xs text-destructive font-medium">{b.overdue} просроч.</span>
+                      )}
+                      <span className="text-sm font-semibold">{b.pct}%</span>
+                    </div>
                   </div>
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
@@ -306,7 +392,10 @@ export default function ReportsPage() {
                       style={{ width: `${b.pct}%` }}
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">Завершено {b.completed} из {b.total}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Завершено {b.completed} из {b.total}
+                    {b.on_time > 0 && ` · В срок: ${b.on_time}`}
+                  </p>
                 </div>
               ))}
             </div>
