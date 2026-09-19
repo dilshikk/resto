@@ -21,6 +21,7 @@ export type Employee = {
   status: "active" | "inactive" | "fired";
   invite_code: string;
   has_claimed_account: boolean;
+  telegram_linked: boolean;
   hired_at?: string;
   created_at: string;
   updated_at: string;
