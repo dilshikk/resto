@@ -115,19 +115,28 @@ async def list_employees(
     db: AsyncSession = Depends(get_db),
 ):
     role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
-    can_all = role and role.permission_level >= 2
+    can_all = bool(role and role.permission_level >= 2)
+
+    own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+
+    if branch_id is not None and not can_all and branch_id not in own_allowed_branches:
+        # A manager who is not a supervisor/director cannot list employees of a
+        # branch they don't belong to, even by passing branch_id explicitly.
+        raise HTTPException(status_code=403, detail="Нет доступа к сотрудникам другого филиала")
 
     result = await db.execute(select(Employee))
     all_emps = result.scalars().all()
 
     visible = []
     for emp in all_emps:
-        if branch_id:
+        if branch_id is not None:
             if emp.primary_branch_id == branch_id or branch_id in (emp.additional_branch_ids or []):
                 visible.append(emp)
         elif can_all:
             visible.append(emp)
-        elif emp.primary_branch_id == current.primary_branch_id or current.primary_branch_id in (emp.additional_branch_ids or []):
+        elif emp.primary_branch_id in own_allowed_branches or bool(
+            own_allowed_branches & set(emp.additional_branch_ids or [])
+        ):
             visible.append(emp)
 
     return [await _build_employee_out(e, db) for e in visible]
@@ -140,6 +149,17 @@ async def create_employee(
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_can_assign_role(data.role_id, current, db)
+
+    role = await _get_own_role(current, db)
+    can_all = bool(role and role.permission_level >= 2)
+    if not can_all:
+        own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+        target_branches = {data.primary_branch_id, *(data.additional_branch_ids or [])}
+        if not target_branches <= own_allowed_branches:
+            raise HTTPException(
+                status_code=403,
+                detail="Нельзя добавить сотрудника в филиал, к которому у вас нет доступа",
+            )
 
     invite_code = _gen_invite()
     for _ in range(5):
@@ -175,6 +195,22 @@ async def update_employee(
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
+    role = await _get_own_role(current, db)
+    can_all = bool(role and role.permission_level >= 2)
+    if not can_all:
+        own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+        existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
+        target_branches = {data.primary_branch_id, *(data.additional_branch_ids or [])}
+        # Must already have access to this employee's current branch(es), and
+        # must not move them into a branch outside the caller's own access.
+        if not (existing_branches & own_allowed_branches):
+            raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
+        if not target_branches <= own_allowed_branches:
+            raise HTTPException(
+                status_code=403,
+                detail="Нельзя перевести сотрудника в филиал, к которому у вас нет доступа",
+            )
+
     if data.role_id != emp.role_id:
         # Changing someone's role is where privilege escalation would happen:
         # never let a caller grant a role above their own permission level.
@@ -197,12 +233,21 @@ async def update_employee(
 @router.post("/{employee_id}/regenerate-invite")
 async def regenerate_invite(
     employee_id: int,
-    _: Employee = Depends(require_manager),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    role = await _get_own_role(current, db)
+    can_all = bool(role and role.permission_level >= 2)
+    if not can_all:
+        own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+        existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
+        if not (existing_branches & own_allowed_branches):
+            raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
+
     new_code = _gen_invite()
     emp.invite_code = new_code
     # A fresh code invalidates any previous Telegram link, so the new code can be
