@@ -1,11 +1,10 @@
 import random
-import string
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.auth import get_current_user, get_current_web_user, require_manager, hash_password
+from app.auth import get_current_user, get_current_web_user, require_manager
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.employee import Employee, EmployeeAccount
@@ -35,10 +34,6 @@ async def _get_own_role(current: Employee, db: AsyncSession) -> Role | None:
 
 
 async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSession) -> None:
-    """
-    Raise HTTP 403/404 unless `current` is allowed to grant `role_id` to someone.
-    Nobody can assign a role with a higher permission_level than their own.
-    """
     target_role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not target_role:
         raise HTTPException(status_code=404, detail="Роль не найдена")
@@ -52,10 +47,21 @@ async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSess
         )
 
 
-async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
-    role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
-    branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
-    account = (await db.execute(select(EmployeeAccount).where(EmployeeAccount.employee_id == emp.id))).scalar_one_or_none()
+# ── batch-aware builder ───────────────────────────────────────────────────────
+
+def _employee_out_from_cache(
+    emp: Employee,
+    roles: dict[int, Role],
+    branches: dict[int, Branch],
+    claimed_employee_ids: set[int],
+) -> EmployeeOut:
+    """
+    Build an EmployeeOut from pre-fetched lookup dicts.
+    All four collections must cover every id present in `emp`; callers are
+    responsible for loading them in a single batch query each.
+    """
+    role = roles.get(emp.role_id)
+    branch = branches.get(emp.primary_branch_id)
     return EmployeeOut(
         id=emp.id,
         full_name=emp.full_name,
@@ -68,13 +74,26 @@ async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
         additional_branch_ids=emp.additional_branch_ids or [],
         status=emp.status,
         invite_code=emp.invite_code,
-        has_claimed_account=account is not None,
+        has_claimed_account=emp.id in claimed_employee_ids,
         telegram_linked=emp.telegram_id is not None,
         hired_at=emp.hired_at,
         created_at=emp.created_at,
         updated_at=emp.updated_at,
     )
 
+
+async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
+    """Single-record builder — used after create/update (no list context)."""
+    role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
+    branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
+    account = (await db.execute(select(EmployeeAccount).where(EmployeeAccount.employee_id == emp.id))).scalar_one_or_none()
+    roles = {emp.role_id: role} if role else {}
+    branches = {emp.primary_branch_id: branch} if branch else {}
+    claimed = {emp.id} if account else set()
+    return _employee_out_from_cache(emp, roles, branches, claimed)
+
+
+# ── endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/any")
 async def has_any_employees(db: AsyncSession = Depends(get_db)):
@@ -112,16 +131,14 @@ async def list_employees(
 ):
     role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
     can_all = bool(role and role.permission_level >= 2)
-
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
 
     if branch_id is not None and not can_all and branch_id not in own_allowed_branches:
         raise HTTPException(status_code=403, detail="Нет доступа к сотрудникам другого филиала")
 
-    result = await db.execute(select(Employee))
-    all_emps = result.scalars().all()
+    all_emps = (await db.execute(select(Employee))).scalars().all()
 
-    visible = []
+    visible: list[Employee] = []
     for emp in all_emps:
         if branch_id is not None:
             if emp.primary_branch_id == branch_id or branch_id in (emp.additional_branch_ids or []):
@@ -133,7 +150,33 @@ async def list_employees(
         ):
             visible.append(emp)
 
-    return [await _build_employee_out(e, db) for e in visible]
+    if not visible:
+        return []
+
+    # ── batch-load all referenced rows in 3 queries instead of 3×N ────────────
+    role_ids = {e.role_id for e in visible}
+    branch_ids = {e.primary_branch_id for e in visible}
+    emp_ids = {e.id for e in visible}
+
+    roles_map: dict[int, Role] = {
+        r.id: r
+        for r in (await db.execute(select(Role).where(Role.id.in_(role_ids)))).scalars().all()
+    }
+    branches_map: dict[int, Branch] = {
+        b.id: b
+        for b in (await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))).scalars().all()
+    }
+    claimed_ids: set[int] = {
+        a.employee_id
+        for a in (
+            await db.execute(
+                select(EmployeeAccount).where(EmployeeAccount.employee_id.in_(emp_ids))
+            )
+        ).scalars().all()
+    }
+    # ──────────────────────────────────────────────────────────────────────────
+
+    return [_employee_out_from_cache(e, roles_map, branches_map, claimed_ids) for e in visible]
 
 
 @router.post("", response_model=EmployeeOut)
@@ -185,12 +228,6 @@ async def update_employee(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    True partial update: only fields explicitly sent in the request body are
-    written to the database.  Fields absent from the payload are left unchanged,
-    so a frontend that only sends {"status": "inactive"} will never accidentally
-    wipe additional_branch_ids or any other field.
-    """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
@@ -198,7 +235,6 @@ async def update_employee(
     role = await _get_own_role(current, db)
     can_all = bool(role and role.permission_level >= 2)
 
-    # --- branch-access guard (only relevant when branch fields are changing) ---
     new_primary = data.primary_branch_id if data.primary_branch_id is not None else emp.primary_branch_id
     new_additional = data.additional_branch_ids if data.additional_branch_ids is not None else (emp.additional_branch_ids or [])
 
@@ -206,7 +242,6 @@ async def update_employee(
         own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
         existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
         target_branches = {new_primary, *new_additional}
-
         if not (existing_branches & own_allowed_branches):
             raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
         if not target_branches <= own_allowed_branches:
@@ -215,11 +250,9 @@ async def update_employee(
                 detail="Нельзя перевести сотрудника в филиал, к которому у вас нет доступа",
             )
 
-    # --- privilege-escalation guard (only when role is changing) ---
     if data.role_id is not None and data.role_id != emp.role_id:
         await _assert_can_assign_role(data.role_id, current, db)
 
-    # --- apply only the fields that were actually sent ---
     sent = data.model_fields_set
     if "full_name" in sent and data.full_name is not None:
         emp.full_name = data.full_name.strip()
@@ -286,10 +319,7 @@ async def claim_profile(
     if own_account:
         if own_account.employee_id == target.id:
             return await _build_employee_out(target, db)
-        raise HTTPException(
-            status_code=409,
-            detail="Ваш аккаунт уже привязан к другому профилю сотрудника",
-        )
+        raise HTTPException(status_code=409, detail="Ваш аккаунт уже привязан к другому профилю сотрудника")
 
     already_claimed = (await db.execute(
         select(EmployeeAccount).where(EmployeeAccount.employee_id == target.id)
