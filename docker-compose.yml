@@ -38,6 +38,13 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://yourdomain.com}
       BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-change-this-bot-secret-in-production}
+      PHOTOS_DIR: /data/uploads
+    volumes:
+      # Checklist item photos previously lived in /tmp, which docker wipes on
+      # every restart/rebuild. Mounting a named volume here means uploaded
+      # photos now survive `docker compose up --build`, container restarts,
+      # and host reboots.
+      - uploads_data:/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -68,3 +75,4 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:
