@@ -21,6 +21,7 @@ export type ChecklistTemplate = {
   branch_name?: string;
   is_active: boolean;
   item_count: number;
+  deadline_offset_minutes?: number | null;
   created_at: string;
 };
 
@@ -33,9 +34,12 @@ export type TemplateCreate = {
   description?: string;
   category: string;
   branch_id?: number;
+  deadline_offset_minutes?: number | null;
 };
 
 // ── Checklist types ───────────────────────────────────────────────────────
+
+export type DeadlineStatus = "ON_TIME" | "OVERDUE" | "NOT_COMPLETED" | null;
 
 export type ChecklistItemPhoto = {
   id: number;
@@ -74,6 +78,11 @@ export type Checklist = {
   completed_items: number;
   skipped_items: number;
   created_at: string;
+  // Deadline tracking
+  started_at?: string | null;
+  due_at?: string | null;
+  completed_at?: string | null;
+  deadline_status?: DeadlineStatus;
 };
 
 export type ChecklistDetail = Checklist & { items: ChecklistItem[] };
