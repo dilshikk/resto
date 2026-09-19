@@ -3,7 +3,7 @@ from typing import Any
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -94,4 +94,23 @@ async def require_supervisor(employee: Employee = Depends(get_current_user), db:
     role = role_result.scalar_one_or_none()
     if not role or role.permission_level < 2:
         raise HTTPException(status_code=403, detail="Supervisor access required")
+    return employee
+
+
+async def verify_bot_secret(x_bot_secret: str = Header(...)) -> None:
+    """
+    Guards every /api/v1/bot/* endpoint. Only the Telegram bot service knows this
+    secret (set as BOT_INTERNAL_SECRET on both the backend and the bot). Individual
+    bot endpoints additionally trust a telegram_id in the request body/path to
+    identify which employee is acting, since the bot has no per-user JWT.
+    """
+    if x_bot_secret != settings.BOT_INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid bot secret")
+
+
+async def get_employee_by_telegram_id(telegram_id: int, db: AsyncSession) -> Employee:
+    result = await db.execute(select(Employee).where(Employee.telegram_id == telegram_id))
+    employee = result.scalar_one_or_none()
+    if not employee or employee.status != "active":
+        raise HTTPException(status_code=404, detail="Профиль не найден или не привязан")
     return employee
