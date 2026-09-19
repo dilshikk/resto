@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.auth import get_current_user, require_manager
+from app.config import settings
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem, Checklist, ChecklistItem
@@ -29,7 +30,13 @@ from app.schemas.checklist import (
 
 router = APIRouter(prefix="/checklists", tags=["checklists"])
 
-UPLOAD_DIR = Path("/tmp/mado_uploads")
+# Was hardcoded to /tmp/mado_uploads, which docker discards on every container
+# restart/rebuild since /tmp isn't backed by a persistent volume — every photo
+# ever uploaded vanished (while the Photo rows in the DB stayed, pointing at
+# files that no longer existed). Now configurable via PHOTOS_DIR, which
+# docker-compose mounts as a named volume (uploads_data) that survives
+# restarts and rebuilds.
+UPLOAD_DIR = Path(settings.PHOTOS_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -289,7 +296,7 @@ async def create_checklist(
     return await _build_out(cl, db)
 
 
-# ── Detail ────────────────────────────────────────────────────────────────────
+# ── Detail ──────────────────────────────────────────────────────────────────
 
 @router.get("/{checklist_id}", response_model=ChecklistDetail)
 async def get_checklist(
@@ -303,9 +310,8 @@ async def get_checklist(
     branch = (
         await db.execute(select(Branch).where(Branch.id == cl.branch_id))
     ).scalar_one_or_none()
-
     items = await _get_ordered_items(checklist_id, db)
-    item_outs = [await _build_item_out(item, db) for item in items]
+    item_outs = [await _build_item_out(i, db) for i in items]
 
     return ChecklistDetail(
         id=cl.id,
@@ -323,8 +329,6 @@ async def get_checklist(
         items=item_outs,
     )
 
-
-# ── Step-by-step: current item ────────────────────────────────────────────────
 
 @router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
 async def get_current_item(
