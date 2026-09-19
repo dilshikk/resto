@@ -10,7 +10,7 @@ import {
 } from "@/api/employees.ts";
 import type { Employee, EmployeeCreate, EmployeeUpdate } from "@/api/employees.ts";
 import { listBranches } from "@/api/branches.ts";
-import { Users, Plus, KeyRound, Copy, Pencil } from "lucide-react";
+import { Users, Plus, KeyRound, Copy, Pencil, Send } from "lucide-react";
 
 const STATUS_LABEL: Record<string, string> = {
   active: "Активен",
@@ -23,6 +23,8 @@ const STATUS_COLOR: Record<string, string> = {
   inactive: "bg-secondary text-secondary-foreground",
   fired: "bg-destructive/15 text-destructive",
 };
+
+const TELEGRAM_BOT_USERNAME = "mado_checklist_bot";
 
 type FormValue = {
   full_name: string;
@@ -187,11 +189,12 @@ function InviteDialog({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
   const [code, setCode] = useState(employee.invite_code);
+  const deepLink = `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${code}`;
 
-  const handleCopy = async () => {
+  const handleCopy = async (text: string, successMsg: string) => {
     try {
-      await navigator.clipboard.writeText(code);
-      toast.success("Код скопирован");
+      await navigator.clipboard.writeText(text);
+      toast.success(successMsg);
     } catch {
       toast.error("Не удалось скопировать");
     }
@@ -211,18 +214,30 @@ function InviteDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
-          <h2 className="text-lg font-semibold">Код приглашения</h2>
+          <h2 className="text-lg font-semibold">Вход через Telegram</h2>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
         </div>
         <div className="p-5 space-y-4">
           <p className="text-sm text-muted-foreground">
-            Передайте этот код сотруднику <strong>{employee.full_name}</strong>.
+            Отправьте сотруднику <strong>{employee.full_name}</strong> ссылку или код — он откроет бота, нажмёт «Старт» и попадёт в свой чек-лист.
           </p>
-          <div className="flex items-center gap-2 rounded-lg border bg-muted p-4">
-            <span className="flex-1 text-center text-2xl font-bold tracking-widest">{code}</span>
-            <button type="button" onClick={handleCopy} className="text-muted-foreground hover:text-foreground p-1 rounded">
-              <Copy className="size-4" />
-            </button>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Ссылка на бота</label>
+            <div className="flex items-center gap-2 rounded-lg border bg-muted p-3">
+              <span className="flex-1 truncate text-sm">{deepLink}</span>
+              <button type="button" onClick={() => handleCopy(deepLink, "Ссылка скопирована")} className="text-muted-foreground hover:text-foreground p-1 rounded shrink-0">
+                <Copy className="size-4" />
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Или код приглашения (после /start в боте)</label>
+            <div className="flex items-center gap-2 rounded-lg border bg-muted p-4">
+              <span className="flex-1 text-center text-2xl font-bold tracking-widest">{code}</span>
+              <button type="button" onClick={() => handleCopy(code, "Код скопирован")} className="text-muted-foreground hover:text-foreground p-1 rounded">
+                <Copy className="size-4" />
+              </button>
+            </div>
           </div>
           <button
             type="button"
@@ -347,7 +362,7 @@ export default function EmployeesPage() {
                 <th className="px-4 py-3 text-left font-medium">Должность</th>
                 <th className="px-4 py-3 text-left font-medium">Филиал</th>
                 <th className="px-4 py-3 text-left font-medium">Статус</th>
-                <th className="px-4 py-3 text-left font-medium">Аккаунт</th>
+                <th className="px-4 py-3 text-left font-medium">Telegram</th>
                 <th className="px-4 py-3 text-right font-medium">Действия</th>
               </tr>
             </thead>
@@ -363,14 +378,15 @@ export default function EmployeesPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${emp.has_claimed_account ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
-                      {emp.has_claimed_account ? "Привязан" : "Не привязан"}
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${emp.telegram_linked ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
+                      <Send className="size-3" />
+                      {emp.telegram_linked ? "Привязан" : "Не привязан"}
                     </span>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
-                      {!emp.has_claimed_account && (
-                        <button type="button" onClick={() => setInviteEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Код приглашения">
+                      {!emp.telegram_linked && (
+                        <button type="button" onClick={() => setInviteEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Приглашение в Telegram">
                           <KeyRound className="size-4" />
                         </button>
                       )}
