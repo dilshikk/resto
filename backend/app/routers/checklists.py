@@ -55,39 +55,27 @@ def _compute_deadline_status(cl: Checklist) -> str | None:
     now = datetime.now(timezone.utc)
 
     if cl.completed_at is not None:
-        # Completed: ON_TIME if finished before or at deadline, OVERDUE otherwise
         if cl.completed_at <= cl.due_at:
             return "ON_TIME"
         return "OVERDUE"
 
-    # Not completed yet
     if now <= cl.due_at:
-        # Still within the window — treat as open (no terminal status yet)
         return None  # frontend shows countdown
 
-    # Deadline passed, not completed
-    # After 24 h grace period → permanently NOT_COMPLETED
     if now > cl.due_at + timedelta(hours=24):
         return "NOT_COMPLETED"
 
     return "OVERDUE"
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Access guards ─────────────────────────────────────────────────────────────
 
 async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSession) -> None:
-    """
-    Raise HTTP 403 unless `current` is allowed to read/act on checklist `cl`.
-    Supervisors and directors (permission_level >= 2) can access every branch.
-    Everyone else is limited to their primary branch and additional_branch_ids.
-    """
     role = (
         await db.execute(select(Role).where(Role.id == current.role_id))
     ).scalar_one_or_none()
-    is_supervisor = bool(role and role.permission_level >= 2)
-    if is_supervisor:
+    if role and role.permission_level >= 2:
         return
-
     allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
     if cl.branch_id not in allowed:
         raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
@@ -102,26 +90,27 @@ async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklis
     return cl
 
 
-async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
-    branch = (
-        await db.execute(select(Branch).where(Branch.id == cl.branch_id))
-    ).scalar_one_or_none()
-    items_res = await db.execute(
-        select(ChecklistItem).where(ChecklistItem.checklist_id == cl.id)
-    )
-    items = items_res.scalars().all()
+# ── Builders ──────────────────────────────────────────────────────────────────
+
+def _make_checklist_out(
+    cl: Checklist,
+    branch_name: str,
+    total: int,
+    completed: int,
+    skipped: int,
+) -> ChecklistOut:
     return ChecklistOut(
         id=cl.id,
         template_id=cl.template_id,
         template_name=cl.template_name,
         branch_id=cl.branch_id,
-        branch_name=branch.name if branch else "—",
+        branch_name=branch_name,
         shift=cl.shift,
         date=cl.date,
         status=cl.status,
-        total_items=len(items),
-        completed_items=sum(1 for i in items if i.is_completed),
-        skipped_items=sum(1 for i in items if i.is_skipped),
+        total_items=total,
+        completed_items=completed,
+        skipped_items=skipped,
         created_at=cl.created_at,
         started_at=cl.started_at,
         due_at=cl.due_at,
@@ -130,64 +119,119 @@ async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
     )
 
 
-async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistItemOut:
-    completed_by_name = None
-    if item.completed_by_employee_id:
-        emp = (
-            await db.execute(
-                select(Employee).where(Employee.id == item.completed_by_employee_id)
-            )
-        ).scalar_one_or_none()
-        completed_by_name = emp.full_name if emp else None
-
-    photos_res = await db.execute(
-        select(Photo).where(Photo.checklist_item_id == item.id).order_by(Photo.created_at)
+async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
+    """Single-checklist builder used after create (no list context)."""
+    branch = (
+        await db.execute(select(Branch).where(Branch.id == cl.branch_id))
+    ).scalar_one_or_none()
+    items = (
+        await db.execute(select(ChecklistItem).where(ChecklistItem.checklist_id == cl.id))
+    ).scalars().all()
+    return _make_checklist_out(
+        cl,
+        branch.name if branch else "—",
+        len(items),
+        sum(1 for i in items if i.is_completed),
+        sum(1 for i in items if i.is_skipped),
     )
-    photo_outs = []
-    for p in photos_res.scalars().all():
-        uploader = (
-            await db.execute(select(Employee).where(Employee.id == p.uploaded_by_employee_id))
-        ).scalar_one_or_none()
-        photo_outs.append(
+
+
+async def _build_items_batch(
+    items: list[ChecklistItem],
+    db: AsyncSession,
+) -> list[ChecklistItemOut]:
+    """
+    Build ChecklistItemOut for all items in a single checklist using
+    5 batch queries (employees, photos, photo-uploaders, standards)
+    instead of 3-4 queries per item.
+    """
+    if not items:
+        return []
+
+    # 1. batch-load employees that completed items
+    completer_ids = {i.completed_by_employee_id for i in items if i.completed_by_employee_id}
+    completers: dict[int, str] = {}
+    if completer_ids:
+        completers = {
+            e.id: e.full_name
+            for e in (
+                await db.execute(select(Employee).where(Employee.id.in_(completer_ids)))
+            ).scalars().all()
+        }
+
+    # 2. batch-load all photos for these items
+    item_ids = [i.id for i in items]
+    all_photos = (
+        await db.execute(
+            select(Photo)
+            .where(Photo.checklist_item_id.in_(item_ids))
+            .order_by(Photo.checklist_item_id, Photo.created_at)
+        )
+    ).scalars().all()
+
+    # 3. batch-load photo uploaders
+    uploader_ids = {p.uploaded_by_employee_id for p in all_photos if p.uploaded_by_employee_id}
+    uploaders: dict[int, str] = {}
+    if uploader_ids:
+        uploaders = {
+            e.id: e.full_name
+            for e in (
+                await db.execute(select(Employee).where(Employee.id.in_(uploader_ids)))
+            ).scalars().all()
+        }
+
+    # group photos by item
+    photos_by_item: dict[int, list[Photo]] = {}
+    for p in all_photos:
+        photos_by_item.setdefault(p.checklist_item_id, []).append(p)
+
+    # 4. batch-load standards
+    standard_codes = {i.standard_code for i in items if i.standard_code}
+    standards: dict[str, str] = {}
+    if standard_codes:
+        standards = {
+            s.code: s.title
+            for s in (
+                await db.execute(select(Standard).where(Standard.code.in_(standard_codes)))
+            ).scalars().all()
+        }
+
+    # 5. assemble
+    result = []
+    for item in items:
+        item_photos = [
             ChecklistItemPhotoOut(
                 id=p.id,
                 url=p.url,
-                uploaded_by_name=uploader.full_name if uploader else "—",
+                uploaded_by_name=uploaders.get(p.uploaded_by_employee_id, "—"),
                 created_at=p.created_at,
             )
+            for p in photos_by_item.get(item.id, [])
+        ]
+        result.append(
+            ChecklistItemOut(
+                id=item.id,
+                checklist_id=item.checklist_id,
+                title=item.title,
+                description=item.description,
+                is_required=item.is_required,
+                sort_order=item.sort_order,
+                is_completed=item.is_completed,
+                is_skipped=item.is_skipped,
+                completed_by_name=completers.get(item.completed_by_employee_id) if item.completed_by_employee_id else None,
+                completed_at=item.completed_at,
+                note=item.note,
+                photos=item_photos,
+                standard_code=item.standard_code,
+                standard_title=standards.get(item.standard_code) if item.standard_code else None,
+            )
         )
+    return result
 
-    standard_title = None
-    if item.standard_code:
-        standard = (
-            await db.execute(select(Standard).where(Standard.code == item.standard_code))
-        ).scalar_one_or_none()
-        standard_title = standard.title if standard else None
 
-    return ChecklistItemOut(
-        id=item.id,
-        checklist_id=item.checklist_id,
-        title=item.title,
-        description=item.description,
-        is_required=item.is_required,
-        sort_order=item.sort_order,
-        is_completed=item.is_completed,
-        is_skipped=item.is_skipped,
-        completed_by_name=completed_by_name,
-        completed_at=item.completed_at,
-        note=item.note,
-        photos=photo_outs,
-        standard_code=item.standard_code,
-        standard_title=standard_title,
-    )
-
+# ── Ordering / step helpers ───────────────────────────────────────────────────
 
 async def _get_ordered_items(checklist_id: int, db: AsyncSession) -> list[ChecklistItem]:
-    """
-    Return all items for a checklist sorted by sort_order, with id as a tiebreak.
-    The tiebreak keeps ordering stable (and step numbers correct) for checklists
-    whose items share a duplicate/default sort_order.
-    """
     res = await db.execute(
         select(ChecklistItem)
         .where(ChecklistItem.checklist_id == checklist_id)
@@ -197,12 +241,10 @@ async def _get_ordered_items(checklist_id: int, db: AsyncSession) -> list[Checkl
 
 
 def _is_item_pending(item: ChecklistItem) -> bool:
-    """True if this item still needs action (not completed and not skipped)."""
     return not item.is_completed and not item.is_skipped
 
 
 def _find_current_item(items: list[ChecklistItem]) -> ChecklistItem | None:
-    """Return the first item that is still pending, respecting sort_order."""
     for item in items:
         if _is_item_pending(item):
             return item
@@ -213,11 +255,6 @@ async def _assert_previous_required_done(
     item: ChecklistItem,
     items: list[ChecklistItem],
 ) -> None:
-    """
-    Raise HTTP 400 if any required item that comes before `item` (by sort_order)
-    is still pending. This enforces the step-by-step rule: you cannot act on a
-    later step while an earlier required step is unfinished.
-    """
     for other in items:
         if other.sort_order >= item.sort_order:
             break
@@ -250,21 +287,48 @@ async def list_checklists(
         query = query.where(Checklist.status == status)
     query = query.order_by(Checklist.date.desc(), Checklist.id.desc())
 
-    result = await db.execute(query)
-    all_cls = result.scalars().all()
+    all_cls = (await db.execute(query)).scalars().all()
 
     role = (
         await db.execute(select(Role).where(Role.id == current.role_id))
     ).scalar_one_or_none()
-    is_supervisor = role and role.permission_level >= 2
-
+    is_supervisor = bool(role and role.permission_level >= 2)
     allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
 
-    return [
-        await _build_out(cl, db)
-        for cl in all_cls
-        if is_supervisor or cl.branch_id in allowed
-    ]
+    visible = [cl for cl in all_cls if is_supervisor or cl.branch_id in allowed]
+    if not visible:
+        return []
+
+    # ── batch: 1 query per table instead of 2 per checklist ──────────────────
+    cl_ids = [cl.id for cl in visible]
+    branch_ids = {cl.branch_id for cl in visible}
+
+    branches_map: dict[int, str] = {
+        b.id: b.name
+        for b in (await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))).scalars().all()
+    }
+    all_items = (
+        await db.execute(select(ChecklistItem).where(ChecklistItem.checklist_id.in_(cl_ids)))
+    ).scalars().all()
+
+    items_by_cl: dict[int, list[ChecklistItem]] = {}
+    for it in all_items:
+        items_by_cl.setdefault(it.checklist_id, []).append(it)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    result = []
+    for cl in visible:
+        cl_items = items_by_cl.get(cl.id, [])
+        result.append(
+            _make_checklist_out(
+                cl,
+                branches_map.get(cl.branch_id, "—"),
+                len(cl_items),
+                sum(1 for i in cl_items if i.is_completed),
+                sum(1 for i in cl_items if i.is_skipped),
+            )
+        )
+    return result
 
 
 @router.post("", response_model=ChecklistOut)
@@ -290,12 +354,20 @@ async def create_checklist(
         )
     ).scalar_one_or_none()
     if not tpl:
-        raise HTTPException(status_code=404, detail="Шаблон не найден")
+        raise HTTPException(status_code=404, detail="Шаблон не найден или неактивен")
+
+    tpl_items = (
+        await db.execute(
+            select(ChecklistTemplateItem)
+            .where(ChecklistTemplateItem.template_id == tpl.id)
+            .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
+        )
+    ).scalars().all()
 
     now = datetime.now(timezone.utc)
     due_at = (
         now + timedelta(minutes=tpl.deadline_offset_minutes)
-        if tpl.deadline_offset_minutes is not None
+        if tpl.deadline_offset_minutes
         else None
     )
 
@@ -306,28 +378,20 @@ async def create_checklist(
         shift=data.shift,
         date=data.date,
         status="open",
-        created_by_employee_id=current.id,
         started_at=now,
         due_at=due_at,
     )
     db.add(cl)
     await db.flush()
 
-    items_res = await db.execute(
-        select(ChecklistTemplateItem)
-        .where(ChecklistTemplateItem.template_id == tpl.id)
-        .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
-    )
-    # Re-number sequentially (0, 1, 2, ...) so step-by-step numbering stays
-    # correct even if the source template has duplicate sort_order values.
-    for position, ti in enumerate(items_res.scalars().all()):
+    for ti in tpl_items:
         db.add(
             ChecklistItem(
                 checklist_id=cl.id,
                 title=ti.title,
                 description=ti.description,
+                sort_order=ti.sort_order,
                 is_required=ti.is_required,
-                sort_order=position,
                 standard_code=ti.standard_code,
             )
         )
@@ -338,14 +402,14 @@ async def create_checklist(
         action="checklist.created",
         entity_type="checklist",
         entity_id=cl.id,
-        metadata={"template_id": tpl.id, "branch_id": data.branch_id, "due_at": due_at.isoformat() if due_at else None},
+        metadata={"template": tpl.name, "branch_id": data.branch_id, "shift": data.shift},
     )
     await db.commit()
     await db.refresh(cl)
     return await _build_out(cl, db)
 
 
-# ── Detail ────────────────────────────────────────────────────────────────────
+# ── Detail ─────────────────────────────────────────────────────────────────────
 
 @router.get("/{checklist_id}", response_model=ChecklistDetail)
 async def get_checklist(
@@ -356,26 +420,43 @@ async def get_checklist(
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
-    base = await _build_out(cl, db)
-    items = await _get_ordered_items(checklist_id, db)
-    item_outs = [await _build_item_out(item, db) for item in items]
+    branch = (
+        await db.execute(select(Branch).where(Branch.id == cl.branch_id))
+    ).scalar_one_or_none()
 
-    return ChecklistDetail(**base.model_dump(), items=item_outs)
+    ordered = await _get_ordered_items(checklist_id, db)
+    # Build all items with a single set of batch queries
+    item_outs = await _build_items_batch(ordered, db)
+
+    return ChecklistDetail(
+        id=cl.id,
+        template_id=cl.template_id,
+        template_name=cl.template_name,
+        branch_id=cl.branch_id,
+        branch_name=branch.name if branch else "—",
+        shift=cl.shift,
+        date=cl.date,
+        status=cl.status,
+        total_items=len(ordered),
+        completed_items=sum(1 for i in ordered if i.is_completed),
+        skipped_items=sum(1 for i in ordered if i.is_skipped),
+        created_at=cl.created_at,
+        started_at=cl.started_at,
+        due_at=cl.due_at,
+        completed_at=cl.completed_at,
+        deadline_status=_compute_deadline_status(cl),
+        items=item_outs,
+    )
 
 
-# ── Current item (step-by-step) ───────────────────────────────────────────────
+# ── Current item (step-by-step bot mode) ─────────────────────────────────────
 
-@router.get("/{checklist_id}/current-item",
-            response_model=CurrentItemOut | None)
+@router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
 async def get_current_item(
     checklist_id: int,
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return the next pending item (first item that is neither completed nor skipped).
-    Returns null when all items are done/skipped — the checklist is ready to complete.
-    """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
@@ -393,7 +474,6 @@ async def get_current_item(
         ).scalar_one_or_none()
         standard_title = standard.title if standard else None
 
-    # 1-based position among all items
     position = next(i for i, it in enumerate(items, 1) if it.id == item.id)
 
     return CurrentItemOut(
@@ -436,14 +516,12 @@ async def toggle_item(
     if not item:
         raise HTTPException(status_code=404, detail="Пункт не найден")
 
-    # Step-by-step guard: cannot complete/uncomplete this item while an earlier
-    # required item is still pending.
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
     item.is_completed = not item.is_completed
     if item.is_completed:
-        item.is_skipped = False  # completing clears any previous skip
+        item.is_skipped = False
         item.completed_by_employee_id = current.id
         item.completed_at = datetime.now(timezone.utc)
         if body.note:
@@ -461,7 +539,6 @@ async def toggle_item(
         entity_id=item.id,
         metadata={"checklist_id": checklist_id, "title": item.title, "note": item.note},
     )
-
     await db.commit()
     return {"is_completed": item.is_completed, "is_skipped": item.is_skipped}
 
@@ -476,11 +553,6 @@ async def skip_item(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Skip an optional (is_required=False) item.
-    Required items cannot be skipped — a 400 is returned instead.
-    Also blocked when any earlier required item is still pending.
-    """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
@@ -498,18 +570,10 @@ async def skip_item(
         raise HTTPException(status_code=404, detail="Пункт не найден")
 
     if item.is_required:
-        raise HTTPException(
-            status_code=400,
-            detail="Этот пункт обязателен и не может быть пропущен",
-        )
-
+        raise HTTPException(status_code=400, detail="Этот пункт обязателен и не может быть пропущен")
     if item.is_completed:
-        raise HTTPException(
-            status_code=400,
-            detail="Пункт уже выполнен. Отмените выполнение перед тем, как пропустить.",
-        )
+        raise HTTPException(status_code=400, detail="Пункт уже выполнен. Отмените выполнение перед тем, как пропустить.")
 
-    # Step-by-step guard: even for optional items, earlier required steps must be done first
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
@@ -525,7 +589,6 @@ async def skip_item(
         entity_id=item.id,
         metadata={"checklist_id": checklist_id, "title": item.title, "note": item.note},
     )
-
     await db.commit()
     return {"is_skipped": True}
 
@@ -538,12 +601,6 @@ async def complete_checklist(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Mark the checklist as completed.
-    Blocked if any required item is still pending (not completed).
-    Optional items that were skipped are allowed.
-    Sets completed_at to UTC now so deadline_status can be computed correctly.
-    """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
@@ -551,12 +608,7 @@ async def complete_checklist(
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
     items = await _get_ordered_items(checklist_id, db)
-
-    # Find any required item that was neither completed nor skipped
-    # (required items cannot be skipped, but we check both flags for safety)
-    pending_required = [
-        i for i in items if i.is_required and _is_item_pending(i)
-    ]
+    pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
     if pending_required:
         titles = ", ".join(f"«{i.title}»" for i in pending_required[:3])
         raise HTTPException(
@@ -586,7 +638,6 @@ async def upload_item_photo(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Прикрепить фотоподтверждение к пункту чек-листа."""
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
@@ -623,7 +674,6 @@ async def upload_item_photo(
         db, actor_id=current.id, action="photo.uploaded", entity_type="checklist_item", entity_id=item.id,
         metadata={"photo_id": photo.id},
     )
-
     await db.commit()
     await db.refresh(photo)
     return ChecklistItemPhotoOut(
