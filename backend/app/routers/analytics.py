@@ -1,7 +1,7 @@
 import csv
 import io
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -14,6 +14,7 @@ from app.models.branch import Branch
 from app.models.checklist import Checklist, ChecklistItem
 from app.models.employee import Employee
 from app.models.role import Role
+from app.routers.checklists import _compute_deadline_status
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -62,11 +63,6 @@ async def _get_checklists_in_range(
     branch_id: int | None,
     allowed: set[int] | None,
 ):
-    """
-    Fetch checklists within [date_from, date_to].
-    - If branch_id is given it is used directly (caller already validated access).
-    - Otherwise restrict to `allowed` branch IDs (None = all branches).
-    """
     q = select(Checklist).where(
         Checklist.date >= date_from,
         Checklist.date <= date_to,
@@ -83,6 +79,40 @@ async def _items_for_checklists(checklist_ids: list[int], db: AsyncSession):
         return []
     q = select(ChecklistItem).where(ChecklistItem.checklist_id.in_(checklist_ids))
     return (await db.execute(q)).scalars().all()
+
+
+def _deadline_stats(cls: list[Checklist]) -> dict[str, int]:
+    """
+    Count checklists by deadline_status for those that have a due_at set.
+    Returns: on_time, overdue, not_completed, no_deadline counts.
+    """
+    on_time = overdue = not_completed = no_deadline = 0
+    for c in cls:
+        status = _compute_deadline_status(c)
+        if status is None:
+            no_deadline += 1
+        elif status == "ON_TIME":
+            on_time += 1
+        elif status == "OVERDUE":
+            overdue += 1
+        elif status == "NOT_COMPLETED":
+            not_completed += 1
+    return {
+        "on_time": on_time,
+        "overdue": overdue,
+        "not_completed": not_completed,
+        "no_deadline": no_deadline,
+    }
+
+
+def _avg_completion_minutes(cls: list[Checklist]) -> float | None:
+    """Average minutes from started_at to completed_at for completed checklists."""
+    durations = [
+        (c.completed_at - c.started_at).total_seconds() / 60
+        for c in cls
+        if c.status == "completed" and c.started_at and c.completed_at
+    ]
+    return round(sum(durations) / len(durations), 1) if durations else None
 
 
 # ── summary ─────────────────────────────────────────────────────────────────
@@ -113,6 +143,14 @@ async def get_summary(
     required_items = [i for i in items if i.is_required]
     missed_required = sum(1 for i in required_items if not i.is_completed)
 
+    dl_stats = _deadline_stats(cls)
+    avg_min = _avg_completion_minutes(cls)
+    on_time_pct = (
+        round(dl_stats["on_time"] / (total_cls - dl_stats["no_deadline"]) * 100)
+        if (total_cls - dl_stats["no_deadline"]) > 0
+        else None
+    )
+
     return {
         "date_from": date_from,
         "date_to": date_to,
@@ -123,6 +161,15 @@ async def get_summary(
         "completed_items": completed_items,
         "item_completion_pct": round(completed_items / total_items * 100) if total_items else 0,
         "missed_required_items": missed_required,
+        # Deadline metrics
+        "deadline": {
+            "on_time": dl_stats["on_time"],
+            "overdue": dl_stats["overdue"],
+            "not_completed": dl_stats["not_completed"],
+            "no_deadline": dl_stats["no_deadline"],
+            "on_time_pct": on_time_pct,
+            "avg_completion_minutes": avg_min,
+        },
     }
 
 
@@ -157,11 +204,15 @@ async def get_by_day(
         day_cls = by_date.get(ds, [])
         total = len(day_cls)
         completed = sum(1 for c in day_cls if c.status == "completed")
+        dl = _deadline_stats(day_cls)
         result.append({
             "date": ds,
             "total": total,
             "completed": completed,
             "pct": round(completed / total * 100) if total else 0,
+            "on_time": dl["on_time"],
+            "overdue": dl["overdue"],
+            "not_completed": dl["not_completed"],
         })
         d += timedelta(days=1)
 
@@ -187,19 +238,22 @@ async def get_branches_ranking(
     for c in cls:
         branch_cls[c.branch_id].append(c)
 
-    # Fetch all branch names in one query instead of N separate queries
     name_cache = await _branch_name_cache(set(branch_cls.keys()), db)
 
     result = []
     for bid, items in branch_cls.items():
         total = len(items)
         completed = sum(1 for c in items if c.status == "completed")
+        dl = _deadline_stats(items)
         result.append({
             "branch_id": bid,
             "branch_name": name_cache.get(bid, str(bid)),
             "total": total,
             "completed": completed,
             "pct": round(completed / total * 100) if total else 0,
+            "on_time": dl["on_time"],
+            "overdue": dl["overdue"],
+            "not_completed": dl["not_completed"],
         })
 
     result.sort(key=lambda x: x["pct"], reverse=True)
@@ -262,13 +316,19 @@ async def export_csv(
     ids = list(cl_map.keys())
     items = await _items_for_checklists(ids, db)
 
-    # Fetch all branch names in one query
     branch_cache = await _branch_name_cache({c.branch_id for c in cls}, db)
+
+    STATUS_LABELS = {
+        "ON_TIME": "В срок",
+        "OVERDUE": "Просрочено",
+        "NOT_COMPLETED": "Не выполнено",
+    }
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
         "Дата", "Филиал", "Шаблон", "Смена", "Статус чек-листа",
+        "Дедлайн", "Статус дедлайна",
         "Пункт", "Обязательный", "Выполнен", "Выполнил", "Время выполнения", "Заметка",
     ])
 
@@ -276,12 +336,15 @@ async def export_csv(
 
     for item in items:
         cl = cl_map[item.checklist_id]
+        dl_status = _compute_deadline_status(cl)
         writer.writerow([
             cl.date,
             branch_cache.get(cl.branch_id, str(cl.branch_id)),
             cl.template_name,
             shift_labels.get(cl.shift, cl.shift),
             "Завершён" if cl.status == "completed" else "Открыт",
+            cl.due_at.isoformat() if cl.due_at else "",
+            STATUS_LABELS.get(dl_status, "") if dl_status else "",
             item.title,
             "Да" if item.is_required else "Нет",
             "Да" if item.is_completed else "Нет",
