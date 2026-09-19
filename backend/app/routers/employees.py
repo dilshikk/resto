@@ -46,6 +46,7 @@ async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
         status=emp.status,
         invite_code=emp.invite_code,
         has_claimed_account=account is not None,
+        telegram_linked=emp.telegram_id is not None,
         hired_at=emp.hired_at,
         created_at=emp.created_at,
         updated_at=emp.updated_at,
@@ -170,6 +171,9 @@ async def regenerate_invite(
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
     new_code = _gen_invite()
     emp.invite_code = new_code
+    # A fresh code invalidates any previous Telegram link, so the new code can be
+    # claimed again (e.g. employee lost their phone / lost access to the old chat).
+    emp.telegram_id = None
     await db.commit()
     return {"invite_code": new_code}
 
