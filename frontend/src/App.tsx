@@ -3,6 +3,7 @@ import { DefaultProviders } from "./components/providers/default.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import Index from "./pages/Index.tsx";
 import NotFound from "./pages/NotFound.tsx";
+import OnboardingPage from "./pages/OnboardingPage.tsx";
 import AppLayout from "./pages/app/AppLayout.tsx";
 import DashboardPage from "./pages/app/dashboard/page.tsx";
 import BranchesPage from "./pages/app/branches/page.tsx";
@@ -26,6 +27,14 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/onboarding"
+            element={
+              <RequireAuth>
+                <OnboardingPage />
+              </RequireAuth>
+            }
+          />
           <Route
             element={
               <RequireAuth>
