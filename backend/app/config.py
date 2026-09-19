@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # Must match BOT_INTERNAL_SECRET set on the bot service. Keeps the bot-only
     # endpoints (which trust a telegram_id instead of a JWT) from being called by anyone else.
     BOT_INTERNAL_SECRET: str = "change-this-bot-secret-in-production"
+    # Directory where checklist item photos are stored. Defaults to a path
+    # under /data rather than /tmp so it survives container restarts and
+    # rebuilds when mounted as a persistent Docker volume — see
+    # docker-compose.yml's `uploads_data` volume on the backend service.
+    PHOTOS_DIR: str = "/data/uploads"
 
     @property
     def cors_origins_list(self) -> list[str]:
