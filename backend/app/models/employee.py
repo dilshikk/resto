@@ -13,6 +13,8 @@ class Employee(Base):
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     invite_code: Mapped[str] = mapped_column(String(8), nullable=False)
+    # Set once the employee links their account in the Telegram bot via /start + invite code
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
     primary_branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
     additional_branch_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
     hired_at: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
