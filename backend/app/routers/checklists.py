@@ -112,11 +112,15 @@ async def _build_item_out(item: ChecklistItem, db: AsyncSession) -> ChecklistIte
 
 
 async def _get_ordered_items(checklist_id: int, db: AsyncSession) -> list[ChecklistItem]:
-    """Return all items for a checklist sorted by sort_order."""
+    """
+    Return all items for a checklist sorted by sort_order, with id as a tiebreak.
+    The tiebreak keeps ordering stable (and step numbers correct) for checklists
+    whose items share a duplicate/default sort_order.
+    """
     res = await db.execute(
         select(ChecklistItem)
         .where(ChecklistItem.checklist_id == checklist_id)
-        .order_by(ChecklistItem.sort_order)
+        .order_by(ChecklistItem.sort_order, ChecklistItem.id)
     )
     return list(res.scalars().all())
 
@@ -224,16 +228,18 @@ async def create_checklist(
     items_res = await db.execute(
         select(ChecklistTemplateItem)
         .where(ChecklistTemplateItem.template_id == tpl.id)
-        .order_by(ChecklistTemplateItem.sort_order)
+        .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
     )
-    for ti in items_res.scalars().all():
+    # Re-number sequentially (0, 1, 2, ...) so step-by-step numbering stays
+    # correct even if the source template has duplicate sort_order values.
+    for position, ti in enumerate(items_res.scalars().all()):
         db.add(
             ChecklistItem(
                 checklist_id=cl.id,
                 title=ti.title,
                 description=ti.description,
                 is_required=ti.is_required,
-                sort_order=ti.sort_order,
+                sort_order=position,
                 standard_code=ti.standard_code,
             )
         )
