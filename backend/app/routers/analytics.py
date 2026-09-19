@@ -1,17 +1,19 @@
 import csv
 import io
+from collections import Counter, defaultdict
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
-from app.auth import get_current_user
+from app.auth import require_manager
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.checklist import Checklist, ChecklistItem
 from app.models.employee import Employee
+from app.models.role import Role
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -23,9 +25,34 @@ def _default_range() -> tuple[str, str]:
     return (today - timedelta(days=29)).isoformat(), today.isoformat()
 
 
-async def _branch_name(branch_id: int, db: AsyncSession) -> str:
-    b = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
-    return b.name if b else str(branch_id)
+async def _branch_name_cache(branch_ids: set[int], db: AsyncSession) -> dict[int, str]:
+    """Fetch names for all given branch IDs in a single query."""
+    if not branch_ids:
+        return {}
+    rows = (await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))).scalars().all()
+    return {b.id: b.name for b in rows}
+
+
+async def _allowed_branch_ids(current: Employee, db: AsyncSession) -> set[int] | None:
+    """
+    Return the set of branch IDs the caller may see, or None if unrestricted
+    (supervisor / director with permission_level >= 2).
+    """
+    role = (
+        await db.execute(select(Role).where(Role.id == current.role_id))
+    ).scalar_one_or_none()
+    if role and role.permission_level >= 2:
+        return None  # unrestricted
+    return {current.primary_branch_id, *(current.additional_branch_ids or [])}
+
+
+def _assert_branch_param_allowed(branch_id: int, allowed: set[int] | None) -> None:
+    """Raise 403 if a specific branch_id filter is outside the caller's access."""
+    if allowed is not None and branch_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Нет доступа к аналитике этого филиала",
+        )
 
 
 async def _get_checklists_in_range(
@@ -33,13 +60,21 @@ async def _get_checklists_in_range(
     date_from: str,
     date_to: str,
     branch_id: int | None,
+    allowed: set[int] | None,
 ):
+    """
+    Fetch checklists within [date_from, date_to].
+    - If branch_id is given it is used directly (caller already validated access).
+    - Otherwise restrict to `allowed` branch IDs (None = all branches).
+    """
     q = select(Checklist).where(
         Checklist.date >= date_from,
         Checklist.date <= date_to,
     )
     if branch_id:
         q = q.where(Checklist.branch_id == branch_id)
+    elif allowed is not None:
+        q = q.where(Checklist.branch_id.in_(allowed))
     return (await db.execute(q)).scalars().all()
 
 
@@ -57,13 +92,17 @@ async def get_summary(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
     branch_id: int | None = Query(default=None),
-    _: Employee = Depends(get_current_user),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     if not date_from or not date_to:
         date_from, date_to = _default_range()
 
-    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id)
+    allowed = await _allowed_branch_ids(current, db)
+    if branch_id is not None:
+        _assert_branch_param_allowed(branch_id, allowed)
+
+    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id, allowed)
     ids = [c.id for c in cls]
     items = await _items_for_checklists(ids, db)
 
@@ -94,21 +133,22 @@ async def get_by_day(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
     branch_id: int | None = Query(default=None),
-    _: Employee = Depends(get_current_user),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     if not date_from or not date_to:
         date_from, date_to = _default_range()
 
-    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id)
+    allowed = await _allowed_branch_ids(current, db)
+    if branch_id is not None:
+        _assert_branch_param_allowed(branch_id, allowed)
 
-    # group by date
-    from collections import defaultdict
+    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id, allowed)
+
     by_date: dict[str, list] = defaultdict(list)
     for c in cls:
         by_date[c.date].append(c)
 
-    # fill all days in range
     d = date.fromisoformat(date_from)
     end = date.fromisoformat(date_to)
     result = []
@@ -134,26 +174,29 @@ async def get_by_day(
 async def get_branches_ranking(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
-    _: Employee = Depends(get_current_user),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     if not date_from or not date_to:
         date_from, date_to = _default_range()
 
-    cls = await _get_checklists_in_range(db, date_from, date_to, None)
+    allowed = await _allowed_branch_ids(current, db)
+    cls = await _get_checklists_in_range(db, date_from, date_to, None, allowed)
 
-    from collections import defaultdict
     branch_cls: dict[int, list] = defaultdict(list)
     for c in cls:
         branch_cls[c.branch_id].append(c)
 
+    # Fetch all branch names in one query instead of N separate queries
+    name_cache = await _branch_name_cache(set(branch_cls.keys()), db)
+
     result = []
-    for branch_id, items in branch_cls.items():
+    for bid, items in branch_cls.items():
         total = len(items)
         completed = sum(1 for c in items if c.status == "completed")
         result.append({
-            "branch_id": branch_id,
-            "branch_name": await _branch_name(branch_id, db),
+            "branch_id": bid,
+            "branch_name": name_cache.get(bid, str(bid)),
             "total": total,
             "completed": completed,
             "pct": round(completed / total * 100) if total else 0,
@@ -171,17 +214,20 @@ async def get_violations(
     date_to: str = Query(default=None),
     branch_id: int | None = Query(default=None),
     limit: int = Query(default=10, le=50),
-    _: Employee = Depends(get_current_user),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     if not date_from or not date_to:
         date_from, date_to = _default_range()
 
-    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id)
+    allowed = await _allowed_branch_ids(current, db)
+    if branch_id is not None:
+        _assert_branch_param_allowed(branch_id, allowed)
+
+    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id, allowed)
     ids = [c.id for c in cls]
     items = await _items_for_checklists(ids, db)
 
-    from collections import Counter
     counter: Counter[str] = Counter()
     for item in items:
         if item.is_required and not item.is_completed:
@@ -200,24 +246,24 @@ async def export_csv(
     date_from: str = Query(default=None),
     date_to: str = Query(default=None),
     branch_id: int | None = Query(default=None),
-    _: Employee = Depends(get_current_user),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     if not date_from or not date_to:
         date_from, date_to = _default_range()
 
-    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id)
+    allowed = await _allowed_branch_ids(current, db)
+    if branch_id is not None:
+        _assert_branch_param_allowed(branch_id, allowed)
 
-    # collect all items with checklist meta
+    cls = await _get_checklists_in_range(db, date_from, date_to, branch_id, allowed)
+
     cl_map = {c.id: c for c in cls}
     ids = list(cl_map.keys())
     items = await _items_for_checklists(ids, db)
 
-    # branch name cache
-    branch_cache: dict[int, str] = {}
-    for c in cls:
-        if c.branch_id not in branch_cache:
-            branch_cache[c.branch_id] = await _branch_name(c.branch_id, db)
+    # Fetch all branch names in one query
+    branch_cache = await _branch_name_cache({c.branch_id for c in cls}, db)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -239,7 +285,7 @@ async def export_csv(
             item.title,
             "Да" if item.is_required else "Нет",
             "Да" if item.is_completed else "Нет",
-            "",  # completed_by (skip for now)
+            "",  # completed_by — see TZ item 3.4
             item.completed_at.isoformat() if item.completed_at else "",
             item.note or "",
         ])
