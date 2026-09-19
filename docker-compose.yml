@@ -18,6 +18,7 @@ services:
       - ./backend/migrations/006_standards.sql:/docker-entrypoint-initdb.d/006_standards.sql
       - ./backend/migrations/007_audit_logs.sql:/docker-entrypoint-initdb.d/007_audit_logs.sql
       - ./backend/migrations/008_checklist_item_skip.sql:/docker-entrypoint-initdb.d/008_checklist_item_skip.sql
+      - ./backend/migrations/009_telegram.sql:/docker-entrypoint-initdb.d/009_telegram.sql
     ports:
       - "5433:5432"
     healthcheck:
@@ -35,11 +36,24 @@ services:
       DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD:-mado_password}@db:5432/mado_checklist
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://yourdomain.com}
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-change-this-bot-secret-in-production}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      BACKEND_URL: http://backend:8000/api/v1
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-change-this-bot-secret-in-production}
+    depends_on:
+      - backend
 
   frontend:
     build:
