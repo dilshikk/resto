@@ -29,6 +29,33 @@ def _gen_invite() -> str:
     return "".join(random.choices(INVITE_CHARS, k=8))
 
 
+async def _get_own_role(current: Employee, db: AsyncSession) -> Role | None:
+    return (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
+
+
+async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSession) -> None:
+    """
+    Raise HTTP 403/404 unless `current` is allowed to grant `role_id` to someone
+    (themselves included, via create/update employee).
+
+    Rule: nobody can assign a role with a higher permission_level than their own.
+    This blocks privilege escalation, e.g. a manager (level 1) granting a
+    director role (level 3) to themselves or a colleague. A director (level 3)
+    may still assign up to and including the director role.
+    """
+    target_role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
+    if not target_role:
+        raise HTTPException(status_code=404, detail="Роль не найдена")
+
+    own_role = await _get_own_role(current, db)
+    own_level = own_role.permission_level if own_role else 0
+    if target_role.permission_level > own_level:
+        raise HTTPException(
+            status_code=403,
+            detail="Нельзя назначить роль с более высоким уровнем доступа, чем ваш собственный",
+        )
+
+
 async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
     role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
     branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
@@ -109,9 +136,11 @@ async def list_employees(
 @router.post("", response_model=EmployeeOut)
 async def create_employee(
     data: EmployeeCreate,
-    _: Employee = Depends(require_manager),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
+    await _assert_can_assign_role(data.role_id, current, db)
+
     invite_code = _gen_invite()
     for _ in range(5):
         existing = (await db.execute(select(Employee).where(Employee.invite_code == invite_code))).scalar_one_or_none()
@@ -139,12 +168,17 @@ async def create_employee(
 async def update_employee(
     employee_id: int,
     data: EmployeeUpdate,
-    _: Employee = Depends(require_manager),
+    current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    if data.role_id != emp.role_id:
+        # Changing someone's role is where privilege escalation would happen:
+        # never let a caller grant a role above their own permission level.
+        await _assert_can_assign_role(data.role_id, current, db)
 
     emp.full_name = data.full_name.strip()
     emp.phone = data.phone
