@@ -15,6 +15,9 @@ class ChecklistTemplate(Base):
     branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_by_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"))
+    # Optional deadline: minutes after checklist creation until the due_at is set.
+    # None means this template has no deadline (deadline_status will always be None).
+    deadline_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -47,6 +50,13 @@ class Checklist(Base):
     date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     created_by_employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), nullable=False)
+    # Deadline tracking fields — NULL for checklists created before migration 011.
+    # started_at: when the checklist was created (set on insert, not updated).
+    # due_at:     calculated deadline (started_at + template.deadline_offset_minutes).
+    # completed_at: set when status transitions to "completed".
+    started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    due_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
