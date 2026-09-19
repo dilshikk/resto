@@ -9,6 +9,7 @@ from app.models.notification import Notification
 from app.models.photo import Photo
 from app.models.standard import Standard
 from app.models.audit_log import AuditLog
+from app.models.revoked_token import RevokedToken
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
@@ -18,4 +19,5 @@ __all__ = [
     "Photo",
     "Standard",
     "AuditLog",
+    "RevokedToken",
 ]
