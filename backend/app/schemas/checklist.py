@@ -23,9 +23,13 @@ class TemplateCreate(BaseModel):
     description: str | None = None
     category: str = "general"
     branch_id: int | None = None
+    # Minutes after checklist creation until the deadline is due.
+    # None means this template has no deadline.
+    deadline_offset_minutes: int | None = None
 
 
 class TemplateListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
     description: str | None = None
@@ -34,6 +38,7 @@ class TemplateListItem(BaseModel):
     branch_name: str | None = None
     is_active: bool
     item_count: int
+    deadline_offset_minutes: int | None = None
     created_at: datetime
 
 
@@ -87,6 +92,12 @@ class ChecklistOut(BaseModel):
     completed_items: int
     skipped_items: int
     created_at: datetime
+    # Deadline tracking (None for legacy checklists without deadline data)
+    started_at: datetime | None = None
+    due_at: datetime | None = None
+    completed_at: datetime | None = None
+    # Computed status: ON_TIME | OVERDUE | NOT_COMPLETED | None
+    deadline_status: str | None = None
 
 
 class ChecklistDetail(ChecklistOut):
