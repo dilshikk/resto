@@ -75,6 +75,10 @@ export async function regenerateInviteCode(id: number): Promise<{ invite_code: s
   return res.data;
 }
 
+export async function unlinkEmployeeAccount(id: number): Promise<void> {
+  await apiClient.delete(`/employees/${id}/account`);
+}
+
 export async function getMyProfile(): Promise<MyProfile> {
   const res = await apiClient.get<MyProfile>("/employees/me");
   return res.data;
