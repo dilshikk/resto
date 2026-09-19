@@ -5,12 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.auth import get_current_user, require_manager, hash_password
+from app.auth import get_current_user, get_current_web_user, require_manager, hash_password
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
 from app.models.user import User
+from app.routers.audit_logs import log_action
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeUpdate,
@@ -257,18 +258,25 @@ async def regenerate_invite(
     return {"invite_code": new_code}
 
 
-@router.post("/claim")
+@router.post("/claim", response_model=EmployeeOut)
 async def claim_profile(
     body: ClaimRequest,
-    current_user_employee: Employee = Depends(get_current_user),
+    current_user: User = Depends(get_current_web_user),
     db: AsyncSession = Depends(get_db),
 ):
-    account = (await db.execute(
-        select(EmployeeAccount).where(EmployeeAccount.employee_id == current_user_employee.id)
-    )).scalar_one_or_none()
-    if account:
-        raise HTTPException(status_code=409, detail="Профиль уже привязан")
+    """
+    Link the logged-in web account to an employee profile via invite code.
 
+    Rules:
+    - If this web account is already linked to the *same* employee the code
+      points to, return the current link as-is (idempotent — no duplicate row).
+    - If this web account is already linked to a *different* employee, reject:
+      one web login maps to exactly one employee profile.
+    - If the target employee is already linked to a *different* web account,
+      reject. Re-assigning a profile to a new account is an admin action
+      (regenerate-invite clears telegram_id; a manager can be added here to
+      clear the web link too), not something the claiming user can force.
+    """
     code = body.invite_code.strip().upper()
     target = (await db.execute(select(Employee).where(Employee.invite_code == code))).scalar_one_or_none()
     if not target:
@@ -276,12 +284,68 @@ async def claim_profile(
     if target.status != "active":
         raise HTTPException(status_code=403, detail="Сотрудник деактивирован")
 
-    already = (await db.execute(
+    own_account = (await db.execute(
+        select(EmployeeAccount).where(EmployeeAccount.user_id == current_user.id)
+    )).scalar_one_or_none()
+
+    if own_account:
+        if own_account.employee_id == target.id:
+            # Already claimed by this exact account — idempotent success, no duplicate.
+            return await _build_employee_out(target, db)
+        raise HTTPException(
+            status_code=409,
+            detail="Ваш аккаунт уже привязан к другому профилю сотрудника",
+        )
+
+    already_claimed = (await db.execute(
         select(EmployeeAccount).where(EmployeeAccount.employee_id == target.id)
     )).scalar_one_or_none()
-    if already:
-        raise HTTPException(status_code=409, detail="Этот профиль уже привязан к другому аккаунту")
+    if already_claimed:
+        raise HTTPException(
+            status_code=409,
+            detail="Этот профиль уже привязан к другому аккаунту. Попросите менеджера отвязать его.",
+        )
 
+    account = EmployeeAccount(employee_id=target.id, user_id=current_user.id)
+    db.add(account)
+    await log_action(
+        db, actor_id=target.id, action="employee.account_claimed", entity_type="employee", entity_id=target.id,
+        metadata={"user_id": current_user.id},
+    )
+    await db.commit()
+    return await _build_employee_out(target, db)
+
+
+@router.delete("/{employee_id}/account")
+async def unlink_employee_account(
+    employee_id: int,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Remove the web-account link for an employee so a new account can claim
+    their profile (e.g. they lost access to the original login).
+    Only a manager whose own role level is >= the target employee's role
+    level can unlink them, mirroring the rule for role assignment.
+    """
+    emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    await _assert_can_assign_role(emp.role_id, current, db)
+
+    account = (await db.execute(
+        select(EmployeeAccount).where(EmployeeAccount.employee_id == employee_id)
+    )).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Аккаунт не привязан")
+
+    await db.delete(account)
+    await log_action(
+        db, actor_id=current.id, action="employee.account_unlinked", entity_type="employee", entity_id=employee_id,
+        metadata={"unlinked_user_id": account.user_id},
+    )
+    await db.commit()
     return {"ok": True}
 
 
