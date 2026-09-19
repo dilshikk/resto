@@ -19,5 +19,9 @@ export async function refreshToken(token: string): Promise<TokenResponse> {
 }
 
 export async function logout(): Promise<void> {
-  await apiClient.post("/auth/logout");
+  // Send the refresh token too so the backend can revoke it, not just the
+  // access token — otherwise it could keep minting new access tokens after
+  // this "logged out" session ends.
+  const refresh_token = localStorage.getItem("refresh_token") ?? undefined;
+  await apiClient.post("/auth/logout", { refresh_token });
 }
