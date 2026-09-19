@@ -35,6 +35,33 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSession) -> None:
+    """
+    Raise HTTP 403 unless `current` is allowed to read/act on checklist `cl`.
+    Supervisors and directors (permission_level >= 2) can access every branch.
+    Everyone else is limited to their primary branch and additional_branch_ids.
+    """
+    role = (
+        await db.execute(select(Role).where(Role.id == current.role_id))
+    ).scalar_one_or_none()
+    is_supervisor = bool(role and role.permission_level >= 2)
+    if is_supervisor:
+        return
+
+    allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+    if cl.branch_id not in allowed:
+        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+
+
+async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklist:
+    cl = (
+        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
+    ).scalar_one_or_none()
+    if not cl:
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    return cl
+
+
 async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
     branch = (
         await db.execute(select(Branch).where(Branch.id == cl.branch_id))
@@ -202,6 +229,14 @@ async def create_checklist(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
+    role = (
+        await db.execute(select(Role).where(Role.id == current.role_id))
+    ).scalar_one_or_none()
+    is_supervisor = bool(role and role.permission_level >= 2)
+    allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+    if not is_supervisor and data.branch_id not in allowed:
+        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+
     tpl = (
         await db.execute(
             select(ChecklistTemplate).where(
@@ -262,11 +297,8 @@ async def get_checklist(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    cl = (
-        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
-    ).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
 
     branch = (
         await db.execute(select(Branch).where(Branch.id == cl.branch_id))
@@ -301,14 +333,11 @@ async def get_current_item(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns the next pending item (first item that is neither completed nor skipped).
+    Return the next pending item (first item that is neither completed nor skipped).
     Returns null when all items are done/skipped — the checklist is ready to complete.
     """
-    cl = (
-        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
-    ).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
         return None
 
@@ -351,11 +380,8 @@ async def toggle_item(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    cl = (
-        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
-    ).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
@@ -415,11 +441,8 @@ async def skip_item(
     Required items cannot be skipped — a 400 is returned instead.
     Also blocked when any earlier required item is still pending.
     """
-    cl = (
-        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
-    ).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
@@ -480,11 +503,8 @@ async def complete_checklist(
     Blocked if any required item is still pending (not completed).
     Optional items that were skipped are allowed.
     """
-    cl = (
-        await db.execute(select(Checklist).where(Checklist.id == checklist_id))
-    ).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
 
     items = await _get_ordered_items(checklist_id, db)
 
@@ -519,6 +539,9 @@ async def upload_item_photo(
     db: AsyncSession = Depends(get_db),
 ):
     """Прикрепить фотоподтверждение к пункту чек-листа."""
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
+
     item = (
         await db.execute(
             select(ChecklistItem).where(
@@ -579,6 +602,9 @@ async def delete_item_photo(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
+
     photo = (
         await db.execute(
             select(Photo).where(Photo.id == photo_id, Photo.checklist_item_id == item_id)
