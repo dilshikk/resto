@@ -34,7 +34,7 @@ docker compose up -d --build
 После запуска:
 | Сервис | URL |
 |--------|-----|
-| Frontend | http://localhost:3000 |
+| Frontend | http://localhost:3001 |
 | Backend API | http://localhost:8000 |
 | Swagger Docs | http://localhost:8000/docs |
 
@@ -60,7 +60,7 @@ curl -X POST http://localhost:8000/api/v1/auth/create-user \
   -d '{"email": "admin@mado.uz", "password": "YourPassword", "employee_id": 1}'
 ```
 
-**Шаг 4.** Войти на http://localhost:3000
+**Шаг 4.** Войти на http://localhost:3001
 
 ---
 
@@ -83,6 +83,9 @@ psql -U postgres -d mado_checklist -f migrations/005_photos.sql
 psql -U postgres -d mado_checklist -f migrations/006_standards.sql
 psql -U postgres -d mado_checklist -f migrations/007_audit_logs.sql
 psql -U postgres -d mado_checklist -f migrations/008_checklist_item_skip.sql
+psql -U postgres -d mado_checklist -f migrations/009_telegram.sql
+psql -U postgres -d mado_checklist -f migrations/010_revoked_tokens.sql
+psql -U postgres -d mado_checklist -f migrations/011_checklist_deadlines.sql
 
 # Запустить сервер
 export DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/mado_checklist
@@ -165,7 +168,7 @@ resto/
 │   │   ├── config.py       # Настройки
 │   │   ├── database.py     # Async engine
 │   │   └── main.py
-│   ├── migrations/         # SQL миграции (001–008)
+│   ├── migrations/         # SQL миграции (001–011)
 │   ├── requirements.txt
 │   └── Dockerfile
 └── docker-compose.yml
