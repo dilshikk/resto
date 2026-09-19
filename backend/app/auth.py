@@ -40,6 +40,40 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+async def get_current_web_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    Resolve the raw authenticated `User` row from the access token, with no
+    requirement that an EmployeeAccount link already exists.
+
+    Use this (instead of get_current_user) for endpoints that a logged-in web
+    user must be able to call *before* their account is linked to an employee
+    profile — e.g. POST /employees/claim. get_current_user cannot be used
+    there because it 403s any user without an existing EmployeeAccount,
+    which makes claiming impossible in the first place.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: int | None = payload.get("sub")
+        if user_id is None or payload.get("type") != "access":
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise credentials_exception
+    return user
+
+
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
@@ -99,7 +133,7 @@ async def require_supervisor(employee: Employee = Depends(get_current_user), db:
 
 async def verify_bot_secret(x_bot_secret: str = Header(...)) -> None:
     """
-    Guards every /api/v1/bot/* endpoint. Only the Telegram bot service knows this
+    Guards every /api/v1/bot/* endpoints. Only the Telegram bot service knows this
     secret (set as BOT_INTERNAL_SECRET on both the backend and the bot). Individual
     bot endpoints additionally trust a telegram_id in the request body/path to
     identify which employee is acting, since the bot has no per-user JWT.
