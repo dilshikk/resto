@@ -11,7 +11,7 @@ import {
 } from "@/api/checklists.ts";
 import type { ChecklistTemplate, TemplateCreate } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
-import { ClipboardList, Plus, Trash2, ChevronRight } from "lucide-react";
+import { ClipboardList, Plus, Trash2, ChevronRight, Camera, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
 const CATEGORIES = [
@@ -142,9 +142,17 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
   const qc = useQueryClient();
   const [title, setTitle] = useState("");
   const [isRequired, setIsRequired] = useState(true);
+  const [requiresPhoto, setRequiresPhoto] = useState(false);
+  const [requiresComment, setRequiresComment] = useState(false);
 
   const mut = useMutation({
-    mutationFn: () => addTemplateItem(templateId, { title: title.trim(), is_required: isRequired }),
+    mutationFn: () =>
+      addTemplateItem(templateId, {
+        title: title.trim(),
+        is_required: isRequired,
+        requires_photo: requiresPhoto,
+        requires_comment: requiresComment,
+      }),
     onSuccess: () => {
       toast.success("Пункт добавлен");
       qc.invalidateQueries({ queryKey: ["template", templateId] });
@@ -175,6 +183,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
               autoFocus
             />
           </div>
+
           <label className="flex cursor-pointer items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -184,6 +193,50 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
             />
             Обязательный пункт
           </label>
+
+          {/* Confirmation & photo report section */}
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2.5">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Подтверждение и фотоотчёт
+            </p>
+
+            <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                checked={requiresPhoto}
+                onChange={(e) => setRequiresPhoto(e.target.checked)}
+                className="mt-0.5 accent-primary"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="font-medium flex items-center gap-1.5">
+                  <Camera className="size-3.5 text-muted-foreground" />
+                  Требовать фотоотчёт
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Сотрудник должен прикрепить фото перед отметкой выполнения
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                checked={requiresComment}
+                onChange={(e) => setRequiresComment(e.target.checked)}
+                className="mt-0.5 accent-primary"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="font-medium flex items-center gap-1.5">
+                  <MessageSquare className="size-3.5 text-muted-foreground" />
+                  Требовать комментарий
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Сотрудник должен добавить текстовое описание результата
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div className="flex gap-2 justify-end">
             <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
             <button
@@ -307,9 +360,23 @@ function TemplateDetailPanel({
                 <span className="w-6 shrink-0 text-right text-sm text-muted-foreground">{idx + 1}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{item.title}</p>
-                  {!item.is_required && (
-                    <span className="text-xs text-muted-foreground">Необязательный</span>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                    {!item.is_required && (
+                      <span className="text-xs text-muted-foreground">Необязательный</span>
+                    )}
+                    {item.requires_photo && (
+                      <span className="inline-flex items-center gap-0.5 text-xs text-blue-600 dark:text-blue-400">
+                        <Camera className="size-3" />
+                        Фото
+                      </span>
+                    )}
+                    {item.requires_comment && (
+                      <span className="inline-flex items-center gap-0.5 text-xs text-amber-600 dark:text-amber-400">
+                        <MessageSquare className="size-3" />
+                        Комментарий
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <button
                   type="button"

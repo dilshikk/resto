@@ -197,6 +197,8 @@ async def add_item(
         sort_order=sort_order,
         is_required=data.is_required,
         standard_code=data.standard_code,
+        requires_photo=data.requires_photo,
+        requires_comment=data.requires_comment,
     )
     db.add(item)
     await db.commit()
@@ -229,6 +231,8 @@ async def update_item(
     item.sort_order = data.sort_order
     item.is_required = data.is_required
     item.standard_code = data.standard_code
+    item.requires_photo = data.requires_photo
+    item.requires_comment = data.requires_comment
 
     await db.commit()
     await db.refresh(item)

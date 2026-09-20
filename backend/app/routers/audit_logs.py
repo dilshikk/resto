@@ -29,7 +29,7 @@ async def log_action(
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,
-            metadata=metadata,
+            metadata_=metadata,
         )
     )
     # The caller is responsible for committing the outer transaction.
@@ -38,6 +38,7 @@ async def log_action(
 @router.get("", response_model=list[AuditLogOut])
 async def list_audit_logs(
     entity_type: str | None = None,
+    entity_id: int | None = None,
     actor_id: int | None = None,
     limit: int = 100,
     _: Employee = Depends(require_manager),
@@ -46,6 +47,8 @@ async def list_audit_logs(
     query = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
     if entity_type:
         query = query.where(AuditLog.entity_type == entity_type)
+    if entity_id is not None:
+        query = query.where(AuditLog.entity_id == entity_id)
     if actor_id:
         query = query.where(AuditLog.actor_id == actor_id)
     result = await db.execute(query)

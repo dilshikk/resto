@@ -37,6 +37,11 @@ class ChecklistTemplateItem(Base):
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Optional link to a MADO standard (e.g. "SERVICE-04"), see app/models/standard.py
     standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
+    # Confirmation requirements — enforced at item-completion time.
+    # requires_photo:   employee must attach at least one photo.
+    # requires_comment: employee must supply a non-empty note/comment.
+    requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class Checklist(Base):
@@ -80,3 +85,8 @@ class ChecklistItem(Base):
     note: Mapped[str | None] = mapped_column(String(500))
     # denormalized from the template item, so historical checklists keep their standard link
     standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
+    # Confirmation requirements — denormalized from template item at checklist creation time.
+    # requires_photo:   employee must attach at least one photo before completing.
+    # requires_comment: employee must provide a non-empty note before completing.
+    requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
