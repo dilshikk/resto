@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getMyProfile } from "@/api/employees.ts";
-import { useAuth } from "../context/auth-context.tsx";
+import { useAuth } from "@/context/auth-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import { toast } from "sonner";
 import {
