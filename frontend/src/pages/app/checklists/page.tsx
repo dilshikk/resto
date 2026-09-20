@@ -41,6 +41,14 @@ function todayDate() {
 }
 
 // ── Deadline helpers ──────────────────────────────────────────────────────
+//
+// DeadlineStatus values come exclusively from the backend's
+// _compute_deadline_status().  The frontend never re-derives them from
+// due_at / completed_at to avoid divergence.
+//
+// The only client-side computation that remains is the live countdown
+// timer (hh:mm:ss), which is purely presentational and cannot be
+// moved server-side.
 
 const DEADLINE_CONFIG: Record<
   NonNullable<DeadlineStatus>,
@@ -63,7 +71,18 @@ const DEADLINE_CONFIG: Record<
   },
 };
 
-/** Returns remaining time as "MM:SS" or negative "−MM:SS" string */
+// Inline text variants for the detail row (same source of truth).
+const DEADLINE_INLINE: Record<NonNullable<DeadlineStatus>, { text: string; className: string }> = {
+  ON_TIME: { text: "Выполнено в срок", className: "text-green-600 dark:text-green-400" },
+  OVERDUE: { text: "Завершено с опозданием", className: "text-destructive" },
+  NOT_COMPLETED: { text: "Не выполнено", className: "text-zinc-500 dark:text-zinc-400" },
+};
+
+/**
+ * Live countdown hook — the only date arithmetic that stays on the client.
+ * Returns remaining time formatted as "h:MM:SS" or "−h:MM:SS" (overdue).
+ * Returns null while dueAt is absent or the component hasn't ticked yet.
+ */
 function useCountdown(dueAt: string | null | undefined): string | null {
   const [display, setDisplay] = useState<string | null>(null);
 
@@ -89,36 +108,54 @@ function useCountdown(dueAt: string | null | undefined): string | null {
   return display;
 }
 
+/**
+ * Compact badge shown on checklist cards.
+ *
+ * Decision tree (mirrors backend _compute_deadline_status logic):
+ *   1. No due_at → nothing.
+ *   2. Backend supplied a terminal deadline_status → show status badge.
+ *      (Covers: completed checklists, AND open ones that the server has
+ *       already classified as OVERDUE or NOT_COMPLETED.)
+ *   3. Open + no terminal status + countdown ticking → show live timer.
+ */
 function DeadlineBadge({ cl }: { cl: Checklist }) {
-  const countdown = useCountdown(cl.status === "open" ? cl.due_at : null);
+  // Only tick the timer when the checklist is open AND the backend hasn't
+  // already classified it (i.e. deadline hasn't been definitively evaluated).
+  const needsCountdown = cl.status === "open" && !cl.deadline_status;
+  const countdown = useCountdown(needsCountdown ? cl.due_at : null);
 
   if (!cl.due_at) return null;
 
-  // Completed — show final status badge
-  if (cl.deadline_status && cl.status === "completed") {
+  // Backend has already classified this checklist — show the authoritative badge.
+  if (cl.deadline_status) {
     const cfg = DEADLINE_CONFIG[cl.deadline_status];
     return (
-      <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium", cfg.className)}>
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+          cfg.className,
+        )}
+      >
         {cfg.icon}
         {cfg.label}
       </span>
     );
   }
 
-  // Open with active countdown
-  if (cl.status === "open" && countdown !== null) {
-    const isOverdue = countdown.startsWith("−");
+  // Backend hasn't classified yet → show a live countdown.
+  if (countdown !== null) {
+    const isNegative = countdown.startsWith("−");
     return (
       <span
         className={cn(
           "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums",
-          isOverdue
+          isNegative
             ? "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
             : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
         )}
       >
         <Clock className="size-3" />
-        {isOverdue ? `Просрочено на ${countdown.slice(1)}` : `До дедлайна: ${countdown}`}
+        {isNegative ? `Просрочено на ${countdown.slice(1)}` : `До дедлайна: ${countdown}`}
       </span>
     );
   }
@@ -325,8 +362,19 @@ function SignedPhoto({
 
 // ── Checklist Detail Modal ────────────────────────────────────────────────
 
+/**
+ * Detailed deadline row shown inside the modal header.
+ *
+ * Shows the absolute due_at timestamp, then one of:
+ *   - Live countdown (open + no terminal status from server yet)
+ *   - Final server-side verdict text (OVERDUE / NOT_COMPLETED / ON_TIME)
+ *
+ * Like DeadlineBadge, this component never recomputes deadline_status
+ * locally — it only reads the value supplied by the backend.
+ */
 function DeadlineDetailRow({ cl }: { cl: Checklist }) {
-  const countdown = useCountdown(cl.status === "open" ? cl.due_at : null);
+  const needsCountdown = cl.status === "open" && !cl.deadline_status;
+  const countdown = useCountdown(needsCountdown ? cl.due_at : null);
 
   if (!cl.due_at) return null;
 
@@ -334,24 +382,30 @@ function DeadlineDetailRow({ cl }: { cl: Checklist }) {
     day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
   });
 
-  const isOverdue = countdown?.startsWith("−");
-
   return (
     <div className="shrink-0 border-b bg-muted/20 px-5 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
       <span>Дедлайн: <span className="font-medium text-foreground">{dueFormatted}</span></span>
-      {cl.status === "open" && countdown !== null && (
-        <span className={cn("font-medium", isOverdue ? "text-destructive" : "text-amber-600 dark:text-amber-400")}>
-          {isOverdue ? `Просрочено на ${countdown.slice(1)}` : `Осталось: ${countdown}`}
+
+      {/* Live countdown — only while the server hasn't classified yet */}
+      {countdown !== null && (
+        <span
+          className={cn(
+            "font-medium",
+            countdown.startsWith("−")
+              ? "text-destructive"
+              : "text-amber-600 dark:text-amber-400",
+          )}
+        >
+          {countdown.startsWith("−")
+            ? `Просрочено на ${countdown.slice(1)}`
+            : `Осталось: ${countdown}`}
         </span>
       )}
-      {cl.deadline_status && cl.status === "completed" && (
-        <span className={cn(
-          "font-medium",
-          cl.deadline_status === "ON_TIME" ? "text-green-600 dark:text-green-400" : "text-destructive",
-        )}>
-          {cl.deadline_status === "ON_TIME" ? "Выполнено в срок" :
-           cl.deadline_status === "OVERDUE" ? "Завершено с опозданием" :
-           "Не выполнено"}
+
+      {/* Terminal verdict from backend — single source of truth */}
+      {cl.deadline_status && (
+        <span className={cn("font-medium", DEADLINE_INLINE[cl.deadline_status].className)}>
+          {DEADLINE_INLINE[cl.deadline_status].text}
         </span>
       )}
     </div>
