@@ -233,3 +233,27 @@ export async function skipChecklistItem(
 export async function completeChecklist(checklistId: number): Promise<void> {
   await apiClient.post(`/checklists/${checklistId}/complete`);
 }
+
+/**
+ * Obtain a short-lived signed URL for a photo file.
+ *
+ * GET /checklists/photos/{filename} requires a Bearer token which <img src>
+ * tags cannot supply.  This endpoint exchanges the Bearer token (sent via the
+ * axios interceptor) for a time-limited URL that can be used directly in an
+ * <img src> attribute without any extra headers.
+ *
+ * The returned URL is valid for ~1 hour.  Callers should cache it and only
+ * re-fetch when it has expired.
+ */
+export async function getPhotoSignedUrl(
+  photoUrl: string,
+): Promise<string> {
+  // photoUrl is stored as "/api/v1/checklists/photos/{filename}"
+  // Strip the /api/v1 prefix so we can call it through apiClient.
+  const path = photoUrl.replace(/^\/api\/v1/, "");
+  const filename = path.split("/").pop()!;
+  const res = await apiClient.get<{ url: string; expires_at: string }>(
+    `/checklists/photos/${filename}/signed-url`,
+  );
+  return res.data.url;
+}
