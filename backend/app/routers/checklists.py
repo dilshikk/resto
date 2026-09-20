@@ -90,6 +90,12 @@ async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklis
     return cl
 
 
+async def _get_role(employee: Employee, db: AsyncSession) -> Role | None:
+    return (
+        await db.execute(select(Role).where(Role.id == employee.role_id))
+    ).scalar_one_or_none()
+
+
 # ── Builders ──────────────────────────────────────────────────────────────────
 
 def _make_checklist_out(
@@ -640,15 +646,43 @@ async def skip_item(
 @router.post("/{checklist_id}/complete")
 async def complete_checklist(
     checklist_id: int,
-    current: Employee = Depends(require_manager),
+    # Any authenticated employee can reach this endpoint.
+    # Ownership is enforced inside the handler:
+    #   - staff (permission_level == 0): only their own checklist
+    #   - manager and above (permission_level >= 1): any checklist in their branch
+    current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Mark a checklist as completed.
+
+    Access rules (least-privilege, per spec):
+      • Staff employee — can only complete a checklist they created themselves
+        (created_by_employee_id == current.id).  This covers the normal bot
+        flow where a waiter, runner, etc. finishes their own shift checklist.
+      • Manager / supervisor / director (permission_level >= 1) — can complete
+        any checklist within their allowed branches, e.g. to force-close an
+        overdue checklist.
+
+    In both cases the branch-level guard is applied first, and all required
+    items must already be completed before the checklist can be closed.
+    """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
+    # ── ownership check for non-managers ────────────────────────────────────
+    role = await _get_role(current, db)
+    is_manager = bool(role and role.permission_level >= 1)
+    if not is_manager and cl.created_by_employee_id != current.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Вы можете завершить только свой чек-лист. Обратитесь к менеджеру.",
+        )
+
+    # ── all required items must be done ─────────────────────────────────────
     items = await _get_ordered_items(checklist_id, db)
     pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
     if pending_required:
@@ -663,8 +697,16 @@ async def complete_checklist(
     cl.completed_at = now
 
     await log_action(
-        db, actor_id=current.id, action="checklist.completed", entity_type="checklist", entity_id=cl.id,
-        metadata={"completed_at": now.isoformat(), "deadline_status": _compute_deadline_status(cl)},
+        db,
+        actor_id=current.id,
+        action="checklist.completed",
+        entity_type="checklist",
+        entity_id=cl.id,
+        metadata={
+            "completed_at": now.isoformat(),
+            "deadline_status": _compute_deadline_status(cl),
+            "completed_by_manager": is_manager,
+        },
     )
     await db.commit()
     return {"ok": True, "deadline_status": _compute_deadline_status(cl)}
