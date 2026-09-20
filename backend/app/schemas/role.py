@@ -10,3 +10,4 @@ class RoleOut(BaseModel):
     name_en: str | None = None
     category: str
     permission_level: int
+    can_access_all_branches: bool

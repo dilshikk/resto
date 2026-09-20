@@ -52,16 +52,16 @@ def _verify_photo_token(filename: str, token: str) -> None:
         expires_str, mac = token.split(".", 1)
         expires_at = int(expires_str)
     except (ValueError, AttributeError):
-        raise HTTPException(status_code=403, detail="Недействительный токен фото")
+        raise HTTPException(status_code=403, detail="\u041d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u0442\u043e\u043a\u0435\u043d \u0444\u043e\u0442\u043e")
 
     if int(time.time()) > expires_at:
-        raise HTTPException(status_code=403, detail="Токен фото истёк. Обновите страницу.")
+        raise HTTPException(status_code=403, detail="\u0422\u043e\u043a\u0435\u043d \u0444\u043e\u0442\u043e \u0438\u0441\u0442\u0451\u043a. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0443.")
 
     msg = f"{filename}:{expires_at}".encode()
     expected = hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(expected, mac):
-        raise HTTPException(status_code=403, detail="Недействительный токен фото")
+        raise HTTPException(status_code=403, detail="\u041d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u0442\u043e\u043a\u0435\u043d \u0444\u043e\u0442\u043e")
 
 
 # ── Deadline helpers ────────────────────────────────────────────────────────
@@ -92,11 +92,11 @@ async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSessi
     role = (
         await db.execute(select(Role).where(Role.id == current.role_id))
     ).scalar_one_or_none()
-    if role and role.permission_level >= 2:
+    if role and role.can_access_all_branches:
         return
     allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
     if cl.branch_id not in allowed:
-        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+        raise HTTPException(status_code=403, detail="\u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430 \u043a \u0447\u0435\u043a-\u043b\u0438\u0441\u0442\u0443 \u0434\u0440\u0443\u0433\u043e\u0433\u043e \u0444\u0438\u043b\u0438\u0430\u043b\u0430")
 
 
 async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklist:
@@ -104,7 +104,7 @@ async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklis
         await db.execute(select(Checklist).where(Checklist.id == checklist_id))
     ).scalar_one_or_none()
     if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+        raise HTTPException(status_code=404, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
     return cl
 
 
@@ -153,7 +153,7 @@ async def _build_out(cl: Checklist, db: AsyncSession) -> ChecklistOut:
     ).scalars().all()
     return _make_checklist_out(
         cl,
-        branch.name if branch else "—",
+        branch.name if branch else "\u2014",
         len(items),
         sum(1 for i in items if i.is_completed),
         sum(1 for i in items if i.is_skipped),
@@ -225,7 +225,7 @@ async def _build_items_batch(
             ChecklistItemPhotoOut(
                 id=p.id,
                 url=p.url,
-                uploaded_by_name=uploaders.get(p.uploaded_by_employee_id, "—"),
+                uploaded_by_name=uploaders.get(p.uploaded_by_employee_id, "\u2014"),
                 created_at=p.created_at,
             )
             for p in photos_by_item.get(item.id, [])
@@ -290,8 +290,8 @@ async def _assert_previous_required_done(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Нельзя пропустить шаг: сначала выполните обязательный пункт "
-                    f"«{other.title}» (шаг {other.sort_order + 1})"
+                    f"\u041d\u0435\u043b\u044c\u0437\u044f \u043f\u0440\u043e\u043f\u0443\u0441\u0442\u0438\u0442\u044c \u0448\u0430\u0433: \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u0435 \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u043f\u0443\u043d\u043a\u0442 "
+                    f"\u00ab{other.title}\u00bb (\u0448\u0430\u0433 {other.sort_order + 1})"
                 ),
             )
 
@@ -304,7 +304,7 @@ async def _assert_completion_requirements(
     if item.requires_comment and not (note and note.strip()):
         raise HTTPException(
             status_code=400,
-            detail="Обязательно добавьте комментарий",
+            detail="\u041e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439",
         )
     if item.requires_photo:
         photos = (
@@ -315,7 +315,7 @@ async def _assert_completion_requirements(
         if not photos:
             raise HTTPException(
                 status_code=400,
-                detail="Обязательно загрузите фото",
+                detail="\u041e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u043e \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435 \u0444\u043e\u0442\u043e",
             )
 
 
@@ -369,7 +369,7 @@ async def toggle_item(
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
-        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
+        raise HTTPException(status_code=400, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d")
 
     item = (
         await db.execute(
@@ -380,7 +380,7 @@ async def toggle_item(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="Пункт не найден")
+        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
 
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
@@ -426,7 +426,7 @@ async def skip_item(
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
     if cl.status == "completed":
-        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
+        raise HTTPException(status_code=400, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d")
 
     item = (
         await db.execute(
@@ -437,12 +437,12 @@ async def skip_item(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="Пункт не найден")
+        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
 
     if item.is_required:
-        raise HTTPException(status_code=400, detail="Этот пункт обязателен и не может быть пропущен")
+        raise HTTPException(status_code=400, detail="\u042d\u0442\u043e\u0442 \u043f\u0443\u043d\u043a\u0442 \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u0435\u043d \u0438 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d")
     if item.is_completed:
-        raise HTTPException(status_code=400, detail="Пункт уже выполнен. Отмените выполнение перед тем, как пропустить.")
+        raise HTTPException(status_code=400, detail="\u041f\u0443\u043d\u043a\u0442 \u0443\u0436\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d. \u041e\u0442\u043c\u0435\u043d\u0438\u0442\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u043f\u0435\u0440\u0435\u0434 \u0442\u0435\u043c, \u043a\u0430\u043a \u043f\u0440\u043e\u043f\u0443\u0441\u0442\u0438\u0442\u044c.")
 
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
@@ -475,23 +475,23 @@ async def complete_checklist(
     await _assert_branch_access(cl, current, db)
 
     if cl.status == "completed":
-        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
+        raise HTTPException(status_code=400, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d")
 
     role = await _get_role(current, db)
     is_manager = bool(role and role.permission_level >= 1)
     if not is_manager and cl.created_by_employee_id != current.id:
         raise HTTPException(
             status_code=403,
-            detail="Вы можете завершить только свой чек-лист. Обратитесь к менеджеру.",
+            detail="\u0412\u044b \u043c\u043e\u0436\u0435\u0442\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0432\u043e\u0439 \u0447\u0435\u043a-\u043b\u0438\u0441\u0442. \u041e\u0431\u0440\u0430\u0442\u0438\u0442\u0435\u0441\u044c \u043a \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u0443.",
         )
 
     items = await _get_ordered_items(checklist_id, db)
     pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
     if pending_required:
-        titles = ", ".join(f"«{i.title}»" for i in pending_required[:3])
+        titles = ", ".join(f"\u00ab{i.title}\u00bb" for i in pending_required[:3])
         raise HTTPException(
             status_code=400,
-            detail=f"Нельзя завершить: не выполнены обязательные пункты: {titles}",
+            detail=f"\u041d\u0435\u043b\u044c\u0437\u044f \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044c: \u043d\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u044b \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0435 \u043f\u0443\u043d\u043a\u0442\u044b: {titles}",
         )
 
     now = datetime.now(timezone.utc)
@@ -536,13 +536,13 @@ async def upload_item_photo(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="Пункт не найден")
+        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
 
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Только изображения")
+        raise HTTPException(status_code=400, detail="\u0422\u043e\u043b\u044c\u043a\u043e \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f")
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Файл слишком большой (max 8 MB)")
+        raise HTTPException(status_code=400, detail="\u0424\u0430\u0439\u043b \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0431\u043e\u043b\u044c\u0448\u043e\u0439 (max 8 MB)")
 
     ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
@@ -576,35 +576,20 @@ async def get_photo_signed_url(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    """
-    Return a short-lived signed URL for a checklist photo.
-
-    Security checks performed before issuing a token:
-
-    1. Path-traversal guard — the resolved path must remain inside UPLOAD_DIR.
-       Rejects filenames containing "../" or other escape sequences.
-
-    2. Branch-access check — traverse Photo → ChecklistItem → Checklist
-       and call _assert_branch_access, applying the same branch isolation
-       enforced on every other photo/checklist endpoint.  An employee from
-       branch A cannot obtain a signed URL for a photo that belongs to a
-       checklist in branch B.
-    """
     # 1. Path-traversal guard.
     resolved = (UPLOAD_DIR / filename).resolve()
     if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+        raise HTTPException(status_code=400, detail="\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u043e\u0435 \u0438\u043c\u044f \u0444\u0430\u0439\u043b\u0430")
     if not resolved.exists():
-        raise HTTPException(status_code=404, detail="Фото не найдено")
+        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
 
-    # 2. Branch-access check: Photo → ChecklistItem → Checklist.
+    # 2. Branch-access check: Photo \u2192 ChecklistItem \u2192 Checklist.
     expected_url = f"/api/v1/checklists/photos/{filename}"
     photo = (
         await db.execute(select(Photo).where(Photo.url == expected_url))
     ).scalar_one_or_none()
     if not photo:
-        # File exists on disk but has no DB record — treat as not found.
-        raise HTTPException(status_code=404, detail="Фото не найдено")
+        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
 
     item = (
         await db.execute(
@@ -612,7 +597,7 @@ async def get_photo_signed_url(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="Фото не найдено")
+        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
 
     cl = await _get_checklist_or_404(item.checklist_id, db)
     await _assert_branch_access(cl, current, db)
@@ -633,7 +618,7 @@ async def get_item_photo(
 
     path = UPLOAD_DIR / filename
     if not path.exists():
-        raise HTTPException(status_code=404, detail="Фото не найдено")
+        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
 
     return FileResponse(str(path))
 
@@ -655,11 +640,11 @@ async def delete_item_photo(
         )
     ).scalar_one_or_none()
     if not photo:
-        raise HTTPException(status_code=404, detail="Фото не найдено")
+        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
     if photo.uploaded_by_employee_id != current.id:
         role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
         if not role or role.permission_level < 1:
-            raise HTTPException(status_code=403, detail="Недостаточно прав")
+            raise HTTPException(status_code=403, detail="\u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u0430\u0432")
 
     await db.delete(photo)
     await log_action(
