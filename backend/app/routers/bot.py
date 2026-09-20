@@ -45,6 +45,11 @@ router = APIRouter(
 # can reference the same allow-list without duplicating the string literals.
 _ALLOWED_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 
+# Maximum photo size accepted by the bot router.
+# Must stay in sync with MAX_PHOTO_BYTES in bot/app/handlers/checklists.py.
+# The web router (checklists.py) enforces a stricter 8 MB limit for browser uploads.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
 
 async def _to_bot_employee_out(emp: Employee, db: AsyncSession) -> BotEmployeeOut:
     role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
@@ -291,17 +296,17 @@ async def upload_item_photo(
 
     # Validate content type — mirrors the web panel check.
     # The bot always sends Telegram-downloaded files, but we enforce the check
-    # here so a misconfigured or malicious bot process can't store arbitrary files.
+    # here so a misconfigured or malicious bot process can’t store arbitrary files.
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Недопустимый тип файла «{content_type}». Разрешены: JPEG, PNG, WebP, GIF.",
+            detail=f"Недопустимый тип файла \u00ab{content_type}\u00bb. Разрешены: JPEG, PNG, WebP, GIF.",
         )
 
     content = await file.read()
-    if len(content) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Файл слишком большой (max 8 MB)")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail=f"Файл слишком большой (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
 
     ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
@@ -324,3 +329,74 @@ async def upload_item_photo(
     await db.refresh(item)
     outs = await _build_items_batch([item], db)
     return outs[0]
+
+
+@router.delete("/checklists/{checklist_id}/items/{item_id}/photos/{photo_id}")
+async def delete_item_photo(
+    checklist_id: int,
+    item_id: int,
+    photo_id: int,
+    telegram_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delete a photo attached to a checklist item.
+
+    Access rules (mirror the web router):
+      • The employee who uploaded the photo can always delete it.
+      • Managers and above (permission_level >= 1) can delete any photo
+        within their accessible branches.
+
+    Every deletion is recorded in the audit log so the full evidence trail
+    required by the spec (\u00abкаждое действие сотрудника сохраняется») is maintained
+    even when the deletion happens through the Telegram bot.
+    """
+    emp = await get_employee_by_telegram_id(telegram_id, db)
+
+    # Verify the item belongs to the stated checklist.
+    item = (
+        await db.execute(
+            select(ChecklistItem).where(
+                ChecklistItem.id == item_id,
+                ChecklistItem.checklist_id == checklist_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Пункт не найден")
+
+    photo = (
+        await db.execute(
+            select(Photo).where(Photo.id == photo_id, Photo.checklist_item_id == item_id)
+        )
+    ).scalar_one_or_none()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    # Least-privilege check: own photo OR manager+
+    if photo.uploaded_by_employee_id != emp.id:
+        role = (
+            await db.execute(select(Role).where(Role.id == emp.role_id))
+        ).scalar_one_or_none()
+        if not role or role.permission_level < 1:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    # Record deletion BEFORE the row disappears so the log entry is part of
+    # the same transaction and is rolled back if anything else fails.
+    original_uploader_id = photo.uploaded_by_employee_id
+    await db.delete(photo)
+    await log_action(
+        db,
+        actor_id=emp.id,
+        action="photo.deleted",
+        entity_type="checklist_item",
+        entity_id=item_id,
+        metadata={
+            "photo_id": photo_id,
+            "checklist_id": checklist_id,
+            "original_uploader_id": original_uploader_id,
+            "via": "telegram",
+        },
+    )
+    await db.commit()
+    return {"ok": True}
