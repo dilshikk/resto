@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from app.auth import (
     verify_password,
@@ -48,6 +48,12 @@ _REFRESH_COOKIE = "refresh_token"
 # The cookie is scoped to auth endpoints only — the browser will not send it
 # on any other API call, minimising its exposure.
 _REFRESH_COOKIE_PATH = "/api/v1/auth"
+
+# Stable integer key for the advisory lock that guards first-user creation.
+# The value itself is arbitrary; it just needs to be unique across all locks
+# used in this application.  Using a named constant avoids magic numbers and
+# makes it easy to search for all lock sites.
+_FIRST_USER_LOCK_KEY = 0x4D41_444F  # "MADO" in hex
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
@@ -341,7 +347,27 @@ async def create_user_internal(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД."""
+    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД.
+
+    Защита от гонки (TOCTOU):
+    ──────────────────────────
+    Наивная проверка «SELECT COUNT(*) → если 0, то INSERT» не атомарна:
+    два одновременных запроса могут оба прочитать count=0 и оба создать
+    пользователя, что породит конкурирующих администраторов.
+
+    Решение — транзакционный advisory lock PostgreSQL (pg_advisory_xact_lock).
+    Первый вызов захватывает lock; все остальные блокируются на этой строке
+    до завершения первой транзакции.  После коммита/отката lock освобождается
+    автоматически — никакой ручной очистки не требуется, а зависание при сбое
+    невозможно.  Внутри критической секции проверка count=0 становится
+    атомарной: второй запрос, получив lock, уже увидит count=1 и вернёт 403.
+    """
+    # Сериализуем конкурирующие вызовы на уровне БД.
+    # pg_advisory_xact_lock блокирует транзакцию, пока lock занят другой
+    # транзакцией; lock освобождается автоматически при коммите/откате.
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)").bindparams(key=_FIRST_USER_LOCK_KEY))
+
+    # Повторная проверка внутри критической секции — теперь атомарна.
     count_result = await db.execute(select(func.count()).select_from(User))
     count = count_result.scalar_one()
     if count > 0:
