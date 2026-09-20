@@ -22,7 +22,7 @@ Template → Branch assignment rules
 Date per branch
 ───────────────
 Each branch stores a `timezone` string (e.g. "Asia/Tashkent").  The
-scheduler converts UTC "now" to the branch-local date so that a branch
+scheduler converts UTC “now” to the branch-local date so that a branch
 in UTC+5 gets its checklists generated for *its* local tomorrow (which
 is still UTC today at 01:00 UTC).
 
@@ -65,7 +65,7 @@ from app.routers.notifications import notify
 logger = logging.getLogger(__name__)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────────────
 
 def _local_date_str(tz_name: str) -> str:
     """Return today's date string (YYYY-MM-DD) in *tz_name* local time."""
@@ -75,6 +75,20 @@ def _local_date_str(tz_name: str) -> str:
         logger.warning("Unknown timezone '%s', falling back to UTC", tz_name)
         tz = timezone.utc
     return datetime.now(tz).strftime("%Y-%m-%d")
+
+
+def _applicable_templates(
+    templates: list[ChecklistTemplate], branch_id: int
+) -> list[ChecklistTemplate]:
+    """
+    Filter the global template list down to the ones that apply to
+    *branch_id*: either global templates (branch_id is None) or templates
+    explicitly scoped to this branch.
+    """
+    return [
+        t for t in templates
+        if t.branch_id is None or t.branch_id == branch_id
+    ]
 
 
 async def _find_branch_manager(branch_id: int, db) -> Employee | None:
@@ -217,22 +231,28 @@ async def auto_generate_daily_checklists() -> dict[str, int]:
 
         for branch in branches:
             today_str = _local_date_str(branch.timezone)
+
+            # Compute the templates that actually apply to this branch *before*
+            # the manager check so that no_manager reflects the real work that
+            # would have been done.  The old code used len(templates) here,
+            # which included templates scoped to other branches and inflated the
+            # metric for every branch that has no manager.
+            applicable = _applicable_templates(templates, branch.id)
+            if not applicable:
+                continue
+
             manager = await _find_branch_manager(branch.id, db)
             if not manager:
                 logger.warning(
-                    "auto_generate: no active manager for branch %d (%s) — skipping all templates for %s",
-                    branch.id, branch.name, today_str,
+                    "auto_generate: no active manager for branch %d (%s) — skipping %d template(s) for %s",
+                    branch.id, branch.name, len(applicable), today_str,
                 )
-                stats["no_manager"] += len(templates) * len(shifts)
+                stats["no_manager"] += len(applicable) * len(shifts)
                 continue
 
             created_names: list[str] = []
 
-            for tpl in templates:
-                # Skip templates scoped to a different branch.
-                if tpl.branch_id is not None and tpl.branch_id != branch.id:
-                    continue
-
+            for tpl in applicable:
                 tpl_items = items_by_tpl.get(tpl.id, [])
 
                 for shift in shifts:
@@ -291,7 +311,7 @@ async def auto_generate_daily_checklists() -> dict[str, int]:
     return stats
 
 
-# ── Background loop ───────────────────────────────────────────────────────────
+# ── Background loop ────────────────────────────────────────────────────────────────
 
 async def run_checklist_scheduler_loop() -> None:
     """
