@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.auth import get_current_user, require_manager
+from app.config import settings
 from app.database import get_db
 from app.models.branch import Branch
 from app.models.employee import Employee
@@ -25,11 +26,15 @@ from app.schemas.issue import (
 
 router = APIRouter(prefix="/issues", tags=["issues"])
 
-UPLOAD_DIR = Path("/tmp/mado_uploads")
+# Use the same persistent volume that checklist photos use (configured via
+# PHOTOS_DIR env var, default /data/uploads).  Previously this pointed to
+# /tmp/mado_uploads which is an ephemeral tmpfs — all uploaded photos were
+# lost on every container restart.
+UPLOAD_DIR = Path(settings.PHOTOS_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ── helpers ─────────────────────────────────────────────────────────────────
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 async def _emp_name(emp_id: int | None, db: AsyncSession) -> str | None:
     if not emp_id:
@@ -68,14 +73,14 @@ async def _build_out(issue: Issue, db: AsyncSession) -> IssueOut:
     )
 
 
-# ── photo upload ───────────────────────────────────────────────────────────
+# ── photo upload ────────────────────────────────────────────────────────────
 
 @router.post("/upload-photo")
 async def upload_photo(
     file: UploadFile = File(...),
     _: Employee = Depends(get_current_user),
 ):
-    """Save photo to /tmp and return a server-relative URL."""
+    """Save photo to the persistent upload volume and return a server-relative URL."""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Только изображения")
     ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
@@ -90,13 +95,16 @@ async def upload_photo(
 
 @router.get("/photos/{filename}")
 async def get_photo(filename: str, _: Employee = Depends(get_current_user)):
-    path = UPLOAD_DIR / filename
-    if not path.exists():
+    # Path-traversal guard: the resolved path must stay inside UPLOAD_DIR.
+    resolved = (UPLOAD_DIR / filename).resolve()
+    if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+    if not resolved.exists():
         raise HTTPException(status_code=404, detail="Фото не найдено")
-    return FileResponse(str(path))
+    return FileResponse(str(resolved))
 
 
-# ── CRUD ────────────────────────────────────────────────────────────────────
+# ── CRUD ─────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[IssueOut])
 async def list_issues(
@@ -203,7 +211,6 @@ async def update_status(
     if data.status == "closed" and not issue.resolved_at:
         issue.resolved_at = datetime.now(timezone.utc)
 
-    # Notify the newly assigned employee (skip if re-saving the same assignee).
     if data.assigned_to_employee_id is not None and data.assigned_to_employee_id != previous_assignee:
         await notify(
             db,
