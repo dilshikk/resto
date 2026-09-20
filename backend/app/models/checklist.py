@@ -56,13 +56,26 @@ class Checklist(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     created_by_employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), nullable=False)
     # Deadline tracking fields — NULL for checklists created before migration 011.
-    # started_at: when the checklist was created (set on insert, not updated).
-    # due_at:     calculated deadline (started_at + template.deadline_offset_minutes).
+    # started_at:   when the checklist was created (set on insert, not updated).
+    # due_at:       calculated deadline (started_at + template.deadline_offset_minutes).
     # completed_at: set when status transitions to "completed".
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Escalation tracking — set by overdue_escalation background task.
+    # overdue_manager_notified_at:    timestamp when managers (permission_level==1)
+    #                                 were notified about this overdue checklist.
+    # overdue_supervisor_notified_at: timestamp when supervisors/directors
+    #                                 (permission_level>=2) were escalated to.
+    # NULL means the respective wave has not been sent yet.
+    overdue_manager_notified_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    overdue_supervisor_notified_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ChecklistItem(Base):

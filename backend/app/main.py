@@ -12,6 +12,7 @@ from app.database import engine, Base
 from app.rate_limit import limiter
 from app.tasks.revoked_token_cleanup import run_revoked_token_cleanup_loop
 from app.tasks.checklist_scheduler import run_checklist_scheduler_loop
+from app.tasks.overdue_escalation import run_overdue_escalation_loop
 from app.routers import (
     auth,
     branches,
@@ -42,11 +43,15 @@ async def lifespan(app: FastAPI):
         run_checklist_scheduler_loop(),
         name="checklist_scheduler",
     )
+    escalation_task = asyncio.create_task(
+        run_overdue_escalation_loop(),
+        name="overdue_escalation",
+    )
 
     try:
         yield
     finally:
-        for task in (cleanup_task, scheduler_task):
+        for task in (cleanup_task, scheduler_task, escalation_task):
             task.cancel()
             try:
                 await task
@@ -56,7 +61,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.7.0",
+    version="1.8.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )

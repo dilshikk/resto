@@ -43,6 +43,23 @@ class Settings(BaseSettings):
     #   Remove a shift to stop generating it automatically.
     CHECKLIST_AUTO_SHIFTS: str = "morning,afternoon,evening"
 
+    # ── Overdue checklist escalation ─────────────────────────────────────────
+    #
+    # OVERDUE_CHECK_INTERVAL_SECONDS
+    #   How often (in seconds) the escalation loop polls for overdue checklists.
+    #   Default: 60 s.  Decrease for near-real-time alerts; increase to reduce DB load.
+    OVERDUE_CHECK_INTERVAL_SECONDS: int = 60
+
+    # OVERDUE_MANAGER_NOTIFY_MINUTES
+    #   Minutes after due_at before managers (permission_level == 1) are notified.
+    #   ТЗ specifies 10 min: 08:00 overdue → 08:10 manager notified.
+    OVERDUE_MANAGER_NOTIFY_MINUTES: int = 10
+
+    # OVERDUE_SUPERVISOR_NOTIFY_MINUTES
+    #   Minutes after due_at before supervisors/directors (permission_level >= 2)
+    #   are escalated to.  ТЗ specifies 30 min: 08:00 overdue → 08:30 escalation.
+    OVERDUE_SUPERVISOR_NOTIFY_MINUTES: int = 30
+
     # ── Runtime validation ────────────────────────────────────────────────────
 
     @field_validator("SECRET_KEY")
@@ -70,6 +87,13 @@ class Settings(BaseSettings):
     def schedule_hour_must_be_valid(cls, v: int) -> int:
         if not 0 <= v <= 23:
             raise ValueError("CHECKLIST_SCHEDULE_HOUR_UTC must be between 0 and 23")
+        return v
+
+    @field_validator("OVERDUE_MANAGER_NOTIFY_MINUTES", "OVERDUE_SUPERVISOR_NOTIFY_MINUTES")
+    @classmethod
+    def notify_minutes_must_be_positive(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("Notify minutes must be >= 0")
         return v
 
     @property
