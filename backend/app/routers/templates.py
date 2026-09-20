@@ -29,20 +29,6 @@ async def _get_or_404(template_id: int, db: AsyncSession) -> ChecklistTemplate:
     return tpl
 
 
-async def _branch_name(branch_id: int | None, db: AsyncSession) -> str | None:
-    if not branch_id:
-        return None
-    b = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
-    return b.name if b else None
-
-
-async def _item_count(template_id: int, db: AsyncSession) -> int:
-    result = await db.execute(
-        select(ChecklistTemplateItem).where(ChecklistTemplateItem.template_id == template_id)
-    )
-    return len(result.scalars().all())
-
-
 async def _next_sort_order(template_id: int, db: AsyncSession) -> int:
     """
     Auto-assign the next sort_order slot when the client doesn't provide one.
@@ -68,7 +54,11 @@ async def _validate_standard_code(standard_code: str | None, db: AsyncSession) -
         raise HTTPException(status_code=404, detail="Стандарт с таким кодом не найден")
 
 
-def _build_template_list_item(tpl: ChecklistTemplate, branch_name: str | None, item_count: int) -> TemplateListItem:
+def _build_template_list_item(
+    tpl: ChecklistTemplate,
+    branch_name: str | None,
+    item_count: int,
+) -> TemplateListItem:
     return TemplateListItem(
         id=tpl.id,
         name=tpl.name,
@@ -88,15 +78,57 @@ async def list_templates(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ChecklistTemplate).where(ChecklistTemplate.is_active == True)  # noqa: E712
-    )
-    templates = result.scalars().all()
+    """
+    Return all active templates.
+
+    Previously this made 2 extra DB round-trips per template:
+      • one SELECT to get the branch name
+      • one SELECT to fetch all items just to call len() on them
+
+    Now we do 3 total queries regardless of how many templates exist:
+      1. SELECT active templates
+      2. SELECT branch names for all distinct branch_ids  (IN)
+      3. SELECT COUNT(*) … GROUP BY template_id for item counts  (aggregate)
+    """
+    templates = (
+        await db.execute(
+            select(ChecklistTemplate).where(ChecklistTemplate.is_active == True)  # noqa: E712
+        )
+    ).scalars().all()
+
+    if not templates:
+        return []
+
+    # ── batch 1: branch names ─────────────────────────────────────────────────
+    branch_ids = {tpl.branch_id for tpl in templates if tpl.branch_id is not None}
+    branches_map: dict[int, str] = {}
+    if branch_ids:
+        branches_map = {
+            b.id: b.name
+            for b in (
+                await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))
+            ).scalars().all()
+        }
+
+    # ── batch 2: item counts via SQL aggregate (no row transfer) ─────────────
+    tpl_ids = [tpl.id for tpl in templates]
+    counts_rows = (
+        await db.execute(
+            select(
+                ChecklistTemplateItem.template_id,
+                func.count().label("cnt"),
+            )
+            .where(ChecklistTemplateItem.template_id.in_(tpl_ids))
+            .group_by(ChecklistTemplateItem.template_id)
+        )
+    ).all()
+    counts_map: dict[int, int] = {row.template_id: row.cnt for row in counts_rows}
+
     return [
         _build_template_list_item(
             tpl,
-            await _branch_name(tpl.branch_id, db),
-            await _item_count(tpl.id, db),
+            branches_map.get(tpl.branch_id) if tpl.branch_id else None,
+            counts_map.get(tpl.id, 0),
         )
         for tpl in templates
     ]
@@ -121,7 +153,13 @@ async def create_template(
     db.add(tpl)
     await db.commit()
     await db.refresh(tpl)
-    return _build_template_list_item(tpl, await _branch_name(tpl.branch_id, db), 0)
+
+    branch_name: str | None = None
+    if tpl.branch_id:
+        b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
+        branch_name = b.name if b else None
+
+    return _build_template_list_item(tpl, branch_name, 0)
 
 
 @router.get("/{template_id}", response_model=TemplateDetail)
@@ -131,14 +169,21 @@ async def get_template(
     db: AsyncSession = Depends(get_db),
 ):
     tpl = await _get_or_404(template_id, db)
-    items_res = await db.execute(
-        select(ChecklistTemplateItem)
-        .where(ChecklistTemplateItem.template_id == tpl.id)
-        .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
-    )
-    items = items_res.scalars().all()
+    items = (
+        await db.execute(
+            select(ChecklistTemplateItem)
+            .where(ChecklistTemplateItem.template_id == tpl.id)
+            .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
+        )
+    ).scalars().all()
+
+    branch_name: str | None = None
+    if tpl.branch_id:
+        b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
+        branch_name = b.name if b else None
+
     return TemplateDetail(
-        **_build_template_list_item(tpl, await _branch_name(tpl.branch_id, db), len(items)).model_dump(),
+        **_build_template_list_item(tpl, branch_name, len(items)).model_dump(),
         items=[TemplateItemOut.model_validate(i) for i in items],
     )
 
@@ -158,11 +203,20 @@ async def update_template(
     tpl.deadline_offset_minutes = data.deadline_offset_minutes
     await db.commit()
     await db.refresh(tpl)
-    return _build_template_list_item(
-        tpl,
-        await _branch_name(tpl.branch_id, db),
-        await _item_count(tpl.id, db),
-    )
+
+    branch_name: str | None = None
+    if tpl.branch_id:
+        b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
+        branch_name = b.name if b else None
+
+    # Use SQL COUNT — no need to transfer item rows just to count them.
+    cnt = (
+        await db.execute(
+            select(func.count()).where(ChecklistTemplateItem.template_id == tpl.id)
+        )
+    ).scalar_one()
+
+    return _build_template_list_item(tpl, branch_name, cnt)
 
 
 @router.delete("/{template_id}")
