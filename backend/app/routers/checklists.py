@@ -1,8 +1,11 @@
+import hashlib
+import hmac
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -32,6 +35,52 @@ router = APIRouter(prefix="/checklists", tags=["checklists"])
 
 UPLOAD_DIR = Path(settings.PHOTOS_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Photo token helpers ───────────────────────────────────────────────────────
+#
+# Browser <img src="..."> cannot attach an Authorization header, so the
+# traditional Bearer-only photo endpoint renders every image as broken.
+#
+# Instead we issue short-lived HMAC-signed tokens:
+#   token = "{expires_unix}.{hmac_hex}"
+#   HMAC  = HMAC-SHA256(SECRET_KEY, "{filename}:{expires_unix}")
+#
+# The token is appended as ?token=... to the photo URL.  Only the signed-url
+# endpoint (which requires Bearer) can produce valid tokens, so unauthenticated
+# clients still cannot access photos.
+
+_PHOTO_TOKEN_TTL_SECONDS = 3600  # 1 hour
+
+
+def _make_photo_token(filename: str) -> tuple[str, int]:
+    """Return (token_string, expires_at_unix)."""
+    expires_at = int(time.time()) + _PHOTO_TOKEN_TTL_SECONDS
+    msg = f"{filename}:{expires_at}".encode()
+    mac = hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+    return f"{expires_at}.{mac}", expires_at
+
+
+def _verify_photo_token(filename: str, token: str) -> None:
+    """
+    Raise HTTP 403 if the token is invalid, tampered, or expired.
+
+    Uses hmac.compare_digest for constant-time comparison to prevent
+    timing-based forgery attempts.
+    """
+    try:
+        expires_str, mac = token.split(".", 1)
+        expires_at = int(expires_str)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=403, detail="Недействительный токен фото")
+
+    if int(time.time()) > expires_at:
+        raise HTTPException(status_code=403, detail="Токен фото истёк. Обновите страницу.")
+
+    msg = f"{filename}:{expires_at}".encode()
+    expected = hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected, mac):
+        raise HTTPException(status_code=403, detail="Недействительный токен фото")
 
 
 # ── Deadline helpers ──────────────────────────────────────────────────────────
@@ -712,7 +761,7 @@ async def complete_checklist(
     return {"ok": True, "deadline_status": _compute_deadline_status(cl)}
 
 
-# ── Photo confirmations ───────────────────────────────────────────────────────
+# ── Photo upload ──────────────────────────────────────────────────────────────
 
 @router.post("/{checklist_id}/items/{item_id}/photos", response_model=ChecklistItemPhotoOut)
 async def upload_item_photo(
@@ -768,13 +817,57 @@ async def upload_item_photo(
     )
 
 
-@router.get("/photos/{filename}")
-async def get_item_photo(filename: str, _: Employee = Depends(get_current_user)):
+# ── Photo serving: signed-URL token endpoint (must come BEFORE the file endpoint) ─
+
+@router.get("/photos/{filename}/signed-url")
+async def get_photo_signed_url(
+    filename: str,
+    _: Employee = Depends(get_current_user),
+) -> dict[str, str]:
+    """
+    Issue a short-lived HMAC-signed URL for a photo file.
+
+    Requires a valid Bearer token (authenticated employee).  Returns a
+    URL that can be used in <img src="..."> without any Authorization header
+    for up to _PHOTO_TOKEN_TTL_SECONDS seconds (currently 1 hour).
+
+    The client should cache the result and re-fetch when the token has
+    expired rather than requesting a new token on every render.
+    """
     path = UPLOAD_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    token, expires_at = _make_photo_token(filename)
+    return {
+        "url": f"/api/v1/checklists/photos/{filename}?token={token}",
+        "expires_at": str(expires_at),
+    }
+
+
+@router.get("/photos/{filename}")
+async def get_item_photo(
+    filename: str,
+    token: str = Query(..., description="HMAC-signed photo token from /photos/{filename}/signed-url"),
+) -> FileResponse:
+    """
+    Serve a photo file.  Requires a valid short-lived token obtained from
+    GET /photos/{filename}/signed-url rather than a Bearer token.
+
+    This allows the URL to be used directly in <img src="..."> without
+    requiring JavaScript to inject Authorization headers — which is not
+    possible with native browser img elements.
+    """
+    _verify_photo_token(filename, token)
+
+    path = UPLOAD_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
     return FileResponse(str(path))
 
+
+# ── Photo delete ──────────────────────────────────────────────────────────────
 
 @router.delete("/{checklist_id}/items/{item_id}/photos/{photo_id}")
 async def delete_item_photo(
