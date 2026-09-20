@@ -7,7 +7,9 @@ services:
     environment:
       POSTGRES_DB: mado_checklist
       POSTGRES_USER: mado
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mado_password}
+      # Required — no fallback. Set in .env or the environment.
+      # Generate with: openssl rand -hex 24
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql
@@ -36,10 +38,14 @@ services:
       dockerfile: Dockerfile
     restart: always
     environment:
-      DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD:-mado_password}@db:5432/mado_checklist
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
+      DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD}@db:5432/mado_checklist
+      # Required — no fallback. Set in .env or the environment.
+      # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+      SECRET_KEY: ${SECRET_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://yourdomain.com}
-      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-change-this-bot-secret-in-production}
+      # Required — no fallback. Set in .env or the environment.
+      # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
       PHOTOS_DIR: /data/uploads
     volumes:
       # Checklist item photos previously lived in /tmp, which docker wipes on
@@ -61,7 +67,8 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       BACKEND_URL: http://backend:8000/api/v1
-      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-change-this-bot-secret-in-production}
+      # Must match SECRET_KEY set on the backend service.
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
     depends_on:
       - backend
 
