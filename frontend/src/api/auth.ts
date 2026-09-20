@@ -1,7 +1,13 @@
-import { apiClient } from "./client.ts";
+import { apiClient, refreshClient } from "./client.ts";
 
 export type LoginRequest = { email: string; password: string };
-export type TokenResponse = { access_token: string; refresh_token: string; token_type: string };
+
+/**
+ * Shape of the access-token-only response now returned by the server.
+ * The refresh token is delivered as an httpOnly cookie — it never appears
+ * in the JSON body.
+ */
+export type TokenResponse = { access_token: string; token_type: string };
 
 /**
  * Discriminated union returned by POST /auth/login.
@@ -25,8 +31,8 @@ export async function login(data: LoginRequest): Promise<LoginApiResponse> {
 }
 
 /**
- * Exchange a pre-auth token + TOTP code for a real access/refresh token pair.
- * Called only when POST /auth/login returned requires_2fa=true.
+ * Exchange a pre-auth token + TOTP code for a real access token.
+ * The server sets the refresh token as an httpOnly cookie.
  */
 export async function verify2fa(
   pre_auth_token: string,
@@ -39,15 +45,19 @@ export async function verify2fa(
   return res.data;
 }
 
-export async function refreshToken(token: string): Promise<TokenResponse> {
-  const res = await apiClient.post<TokenResponse>("/auth/refresh", { refresh_token: token });
+/**
+ * Silently exchange the httpOnly refresh-token cookie for a new access token.
+ * Called on page load by AuthProvider to restore the session without the user
+ * having to log in again.
+ */
+export async function silentRefresh(): Promise<TokenResponse> {
+  const res = await refreshClient.post<TokenResponse>("/auth/refresh");
   return res.data;
 }
 
 export async function logout(): Promise<void> {
-  // Send the refresh token too so the backend can revoke it, not just the
-  // access token — otherwise it could keep minting new access tokens after
-  // this "logged out" session ends.
-  const refresh_token = localStorage.getItem("refresh_token") ?? undefined;
-  await apiClient.post("/auth/logout", { refresh_token });
+  // POST /auth/logout revokes the access token (via Authorization header)
+  // and the refresh token (from the httpOnly cookie) server-side, then
+  // clears the cookie.  No body is required for the refresh token anymore.
+  await apiClient.post("/auth/logout");
 }

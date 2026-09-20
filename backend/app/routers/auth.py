@@ -1,6 +1,6 @@
 import pyotp
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,6 @@ from app.rate_limit import limiter, login_attempt_tracker
 from app.schemas.auth import (
     TokenResponse,
     LoginResponse,
-    RefreshRequest,
     LogoutRequest,
     CreateUserRequest,
     TwoFASetupResponse,
@@ -43,6 +42,46 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Issuer label shown in authenticator apps (e.g. Google Authenticator).
 _APP_NAME = "MADO Checklist"
 
+# Cookie name for the httpOnly refresh token.
+_REFRESH_COOKIE = "refresh_token"
+
+# The cookie is scoped to auth endpoints only — the browser will not send it
+# on any other API call, minimising its exposure.
+_REFRESH_COOKIE_PATH = "/api/v1/auth"
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    """
+    Deliver the refresh token as an httpOnly cookie.
+
+    httpOnly  — JavaScript cannot read or steal the token via XSS.
+    Secure    — sent only over HTTPS (configurable for local HTTP dev).
+    SameSite  — "none" for cross-origin frontends; falls back to "lax" when
+                Secure is disabled (browsers reject None without Secure).
+    Path      — scoped to /api/v1/auth so it is never attached to data API
+                calls, reducing the token's attack surface.
+    """
+    response.set_cookie(
+        key=_REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.effective_samesite,  # type: ignore[arg-type]
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86_400,
+        path=_REFRESH_COOKIE_PATH,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    """Remove the refresh-token cookie on logout."""
+    response.delete_cookie(
+        key=_REFRESH_COOKIE,
+        path=_REFRESH_COOKIE_PATH,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.effective_samesite,  # type: ignore[arg-type]
+    )
+
 
 def _verify_totp(secret: str, code: str) -> bool:
     """Return True if `code` is a valid current TOTP code for `secret`."""
@@ -55,7 +94,8 @@ def _verify_totp(secret: str, code: str) -> bool:
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("10/minute")
 async def login(
-    request: Request,  # required by SlowAPI for IP extraction
+    request: Request,
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
@@ -69,6 +109,9 @@ async def login(
     wrong passwords the account is locked for 15 minutes regardless of the
     source IP.  This stops distributed attacks that rotate IPs to bypass the
     per-IP limit.  A correct password resets the failure counter.
+
+    On success the refresh token is delivered as an httpOnly cookie — it is
+    never exposed in the JSON response body.
     """
     email = form_data.username.lower().strip()
 
@@ -88,36 +131,33 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(form_data.password, user.password_hash):
-        # Always record the failure (including unknown email) so an attacker
-        # can't distinguish "email not found" from "wrong password" via lockout
-        # timing.  Unknown emails are tracked under the address they submitted.
         login_attempt_tracker.record_failure(email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный email или пароль",
         )
 
-    # Correct password — clear the failure counter for this email.
     login_attempt_tracker.record_success(email)
 
     # ── 2FA gate ──────────────────────────────────────────────────────────────
-    # If 2FA is enabled the client must complete a second step before receiving
-    # real tokens.  We issue a short-lived pre-auth token instead so there is
-    # nothing useful an attacker can do with stolen credentials alone.
     if user.is_2fa_enabled and user.totp_secret:
         pre_auth_token = create_pre_auth_token(user.id)
         return LoginResponse(requires_2fa=True, pre_auth_token=pre_auth_token)
 
-    # No 2FA — issue tokens immediately.
+    # ── Issue tokens ──────────────────────────────────────────────────────────
+    # Refresh token → httpOnly cookie (invisible to JS).
+    # Access token  → JSON response body (held in memory by the client).
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
-    return LoginResponse(access_token=access_token, refresh_token=refresh_token)
+    _set_refresh_cookie(response, refresh_token)
+    return LoginResponse(access_token=access_token)
 
 
 @router.post("/2fa/verify", response_model=TokenResponse)
 @limiter.limit("20/minute")
 async def verify_2fa(
-    request: Request,  # required by SlowAPI for IP extraction
+    request: Request,
+    response: Response,
     body: TwoFAVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -125,9 +165,7 @@ async def verify_2fa(
     Exchange a pre-auth token + valid TOTP code for a full access/refresh pair.
 
     Called after POST /auth/login returns requires_2fa=True.
-
-    Rate-limited to 20 requests/minute per IP to prevent TOTP brute-forcing
-    (the 6-digit code space is only 1 000 000 values).
+    The refresh token is delivered as an httpOnly cookie, not in the body.
     """
     payload = decode_pre_auth_token(body.pre_auth_token)
     user = (await db.execute(select(User).where(User.id == int(payload["sub"])))).scalar_one_or_none()
@@ -139,7 +177,8 @@ async def verify_2fa(
 
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token = create_refresh_token({"sub": str(user.id)})
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+    _set_refresh_cookie(response, refresh_token)
+    return TokenResponse(access_token=access_token)
 
 
 @router.post("/2fa/setup", response_model=TwoFASetupResponse)
@@ -212,58 +251,88 @@ async def disable_2fa(
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
-    payload = decode_token(body.refresh_token, "refresh")
+async def refresh(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Silently rotate the refresh token and issue a new access token.
+
+    The refresh token is read from the httpOnly cookie — no request body is
+    needed.  A new refresh token is issued and the old one is revoked
+    (token rotation), so a stolen cookie can only be used once before the
+    legitimate client's next refresh invalidates it.
+    """
+    stored_refresh = request.cookies.get(_REFRESH_COOKIE)
+    if not stored_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token отсутствует",
+        )
+
+    payload = decode_token(stored_refresh, "refresh")
     if payload.get("jti") and await is_token_revoked(payload["jti"], db):
-        raise HTTPException(status_code=401, detail="Refresh token revoked")
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=401, detail="Refresh token отозван")
 
     result = await db.execute(select(User).where(User.id == int(payload["sub"])))
     user = result.scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        _clear_refresh_cookie(response)
+        raise HTTPException(status_code=401, detail="Пользователь не найден")
 
-    # Rotate: the old refresh token must not be usable again once a new pair
-    # has been issued from it.
+    # Rotate: revoke the old refresh token before issuing a new pair.
     await revoke_token(payload, db)
 
     access_token = create_access_token({"sub": str(user.id)})
     new_refresh = create_refresh_token({"sub": str(user.id)})
     await db.commit()
-    return TokenResponse(access_token=access_token, refresh_token=new_refresh)
+
+    _set_refresh_cookie(response, new_refresh)
+    return TokenResponse(access_token=access_token)
 
 
 @router.post("/logout")
 async def logout(
+    request: Request,
+    response: Response,
     body: LogoutRequest | None = None,
     token: str = Depends(oauth2_scheme),
     # Use get_current_web_user (not get_current_user) so that users who have
-    # not yet linked an employee profile can still log out.  get_current_user
-    # resolves an EmployeeAccount and raises 403 when none exists, which would
-    # leave the access token alive with no way for the user to revoke it.
+    # not yet linked an employee profile can still log out.
     current_user: User = Depends(get_current_web_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    End the session: revoke the access token used to call this endpoint (so
-    it cannot be replayed for the rest of its lifetime) and, if the client
-    sends its refresh token, revoke that too (so it cannot be used to mint
-    fresh access tokens after logout).
+    End the session: revoke the access token and the refresh token (from the
+    httpOnly cookie), then clear the cookie.
 
-    Accessible to every authenticated web user, including those who have not
-    yet completed the onboarding flow and have no linked employee profile.
+    The optional body refresh_token is also revoked if present (backward compat).
     """
+    # Revoke the access token used for this request.
     access_payload = decode_token(token, "access")
     await revoke_token(access_payload, db)
 
-    if body and body.refresh_token:
+    # Revoke the httpOnly cookie refresh token.
+    cookie_refresh = request.cookies.get(_REFRESH_COOKIE)
+    if cookie_refresh:
         try:
-            refresh_payload = decode_token(body.refresh_token, "refresh")
+            refresh_payload = decode_token(cookie_refresh, "refresh")
             await revoke_token(refresh_payload, db)
         except HTTPException:
-            # An already-invalid/expired refresh token needs no revocation.
+            pass
+
+    # Also revoke any refresh token sent in the body (backward compat).
+    if body and body.refresh_token:
+        try:
+            body_payload = decode_token(body.refresh_token, "refresh")
+            await revoke_token(body_payload, db)
+        except HTTPException:
             pass
 
     await db.commit()
+    _clear_refresh_cookie(response)
     return {"ok": True}
 
 
@@ -272,11 +341,7 @@ async def create_user_internal(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД.
-
-    Принимает данные в теле запроса (JSON), а не в query-параметрах, чтобы
-    пароль не попадал в URL (логи сервера, история браузера, referrer).
-    """
+    """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД."""
     count_result = await db.execute(select(func.count()).select_from(User))
     count = count_result.scalar_one()
     if count > 0:

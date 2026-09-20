@@ -2,8 +2,15 @@ from pydantic import BaseModel
 
 
 class TokenResponse(BaseModel):
+    """
+    Returned by POST /auth/refresh and POST /auth/2fa/verify.
+
+    The refresh token is no longer included in the response body — it is
+    delivered as an httpOnly cookie by the server.  Only the short-lived
+    access token is returned here so the client can attach it to API calls
+    via the Authorization header.
+    """
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 
@@ -11,31 +18,22 @@ class LoginResponse(BaseModel):
     """
     Returned by POST /auth/login.
 
-    When 2FA is not enabled the response looks like a normal TokenResponse
-    (access_token + refresh_token are set, requires_2fa is False).
+    When 2FA is not enabled: access_token is populated and the refresh token
+    is set as an httpOnly cookie by the server.
 
-    When 2FA is enabled access_token and refresh_token are empty strings and
+    When 2FA is enabled: access_token is empty, requires_2fa=True, and
     pre_auth_token holds a short-lived single-use token the client must send
-    to POST /auth/2fa/verify together with the TOTP code.  Full tokens are
-    issued only after the TOTP code is accepted.
+    to POST /auth/2fa/verify together with the TOTP code.
     """
     access_token: str = ""
-    refresh_token: str = ""
     token_type: str = "bearer"
     requires_2fa: bool = False
     pre_auth_token: str = ""
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
 class LogoutRequest(BaseModel):
-    # Optional so old frontend builds that call POST /auth/logout with no body
-    # still work (the access token from the Authorization header is always
-    # revoked either way) — but a refresh token here also gets revoked, which
-    # is required to actually end the session rather than just discard it
-    # client-side.
+    # Kept for backward compatibility — the body refresh_token (if sent) is
+    # also revoked.  The httpOnly cookie refresh token is always revoked.
     refresh_token: str | None = None
 
 

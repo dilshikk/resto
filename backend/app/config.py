@@ -11,8 +11,6 @@ class Settings(BaseSettings):
     BOT_INTERNAL_SECRET: str
 
     # ── Application identity ─────────────────────────────────────────────────
-    # Human-readable application name used in notifications, bot messages, and
-    # API metadata.  Override via APP_NAME env var to white-label the system.
     APP_NAME: str = "MADO Checklist"
 
     # ── Non-secret settings — safe defaults are fine. ────────────────────────
@@ -21,6 +19,16 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     CORS_ORIGINS: str = "http://localhost:5173"
     PHOTOS_DIR: str = "/data/uploads"
+
+    # ── Cookie security ───────────────────────────────────────────────────────
+    # Set COOKIE_SECURE=false in local .env when running over plain HTTP.
+    # In production (HTTPS) leave at the default True.
+    # When COOKIE_SECURE is False the SameSite attribute is forced to "lax"
+    # because browsers reject SameSite=None without Secure.
+    COOKIE_SECURE: bool = True
+    # "none" is required for cross-origin setups (separate API domain).
+    # "lax" is used automatically when COOKIE_SECURE=False.
+    COOKIE_SAMESITE: str = "none"
 
     # ── Automatic checklist generation ───────────────────────────────────────
     CHECKLIST_SCHEDULE_HOUR_UTC: int = 1
@@ -67,9 +75,23 @@ class Settings(BaseSettings):
             raise ValueError("Notify minutes must be >= 0")
         return v
 
+    @field_validator("COOKIE_SAMESITE")
+    @classmethod
+    def samesite_must_be_valid(cls, v: str) -> str:
+        if v.lower() not in ("strict", "lax", "none"):
+            raise ValueError("COOKIE_SAMESITE must be 'strict', 'lax', or 'none'")
+        return v.lower()
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]
+
+    @property
+    def effective_samesite(self) -> str:
+        """SameSite=None requires Secure; fall back to Lax for plain-HTTP dev."""
+        if not self.COOKIE_SECURE and self.COOKIE_SAMESITE == "none":
+            return "lax"
+        return self.COOKIE_SAMESITE
 
 
 settings = Settings()

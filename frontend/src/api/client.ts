@@ -4,25 +4,48 @@ const baseURL = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL}/api/v1`
   : "/api/v1";
 
-// Main client — used by all API modules.
+// ── In-memory access token ─────────────────────────────────────────────────
+// The access token is held only in module-level memory — it is NEVER written
+// to localStorage or sessionStorage.  An XSS script that runs in the same
+// page context could technically read this variable, but:
+//   • The token is short-lived (default 60 min).
+//   • The refresh token lives in an httpOnly cookie that JS cannot touch at
+//     all, so an attacker cannot silently extend the session after the access
+//     token expires.
+// On page reload the token is lost; AuthProvider calls silentRefresh() on
+// mount to restore it transparently via the httpOnly cookie.
+let _accessToken: string | null = null;
+
+export function setAccessToken(token: string | null): void {
+  _accessToken = token;
+}
+
+export function getAccessToken(): string | null {
+  return _accessToken;
+}
+
+// ── Axios instances ────────────────────────────────────────────────────────
+// withCredentials: true is required so the browser attaches the httpOnly
+// refresh-token cookie on every request to the same API origin.
 export const apiClient = axios.create({
   baseURL,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true,
 });
 
 // Bare client used exclusively for the token-refresh call.
-// It has NO response interceptor, so a 401 from /auth/refresh
-// will not trigger another refresh attempt (infinite-loop guard).
-const refreshClient = axios.create({
+// It has NO response interceptor, so a 401 from /auth/refresh will not
+// trigger another refresh attempt (infinite-loop guard).
+export const refreshClient = axios.create({
   baseURL,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true, // must send the httpOnly cookie
 });
 
 // ── Request interceptor ────────────────────────────────────────────────────
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem("access_token");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  if (_accessToken) {
+    config.headers.Authorization = `Bearer ${_accessToken}`;
   }
   return config;
 });
@@ -50,8 +73,8 @@ function processQueue(error: unknown, token: string | null) {
 }
 
 function clearAuthAndRedirect() {
-  localStorage.removeItem("access_token");
-  localStorage.removeItem("refresh_token");
+  // Wipe the in-memory token — no localStorage cleanup needed.
+  _accessToken = null;
   window.location.href = "/login";
 }
 
@@ -72,13 +95,6 @@ apiClient.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    const storedRefreshToken = localStorage.getItem("refresh_token");
-    if (!storedRefreshToken) {
-      // No refresh token at all — go straight to login.
-      clearAuthAndRedirect();
-      return Promise.reject(error);
-    }
-
     // If a refresh is already in flight, queue this request until it settles.
     if (isRefreshing) {
       return new Promise<string>((resolve, reject) => {
@@ -90,25 +106,24 @@ apiClient.interceptors.response.use(
     }
 
     // We are the first to discover the expired token — start the refresh.
+    // The refresh token lives in the httpOnly cookie; no body is needed.
     originalRequest._retry = true;
     isRefreshing = true;
 
     try {
-      const { data } = await refreshClient.post<{
-        access_token: string;
-        refresh_token: string;
-      }>("/auth/refresh", { refresh_token: storedRefreshToken });
+      const { data } = await refreshClient.post<{ access_token: string }>(
+        "/auth/refresh",
+      );
 
-      localStorage.setItem("access_token", data.access_token);
-      localStorage.setItem("refresh_token", data.refresh_token);
+      _accessToken = data.access_token;
 
-      // Inject the new token into the original request and all queued ones.
+      // Retry the original request and all queued ones with the new token.
       originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
       processQueue(null, data.access_token);
 
       return apiClient(originalRequest);
     } catch (refreshError) {
-      // Refresh failed (expired / revoked refresh token) — log the user out.
+      // Refresh failed (expired / revoked cookie) — log the user out.
       processQueue(refreshError, null);
       clearAuthAndRedirect();
       return Promise.reject(refreshError);
