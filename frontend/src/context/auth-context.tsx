@@ -1,15 +1,35 @@
 import React, { createContext, useContext, useState, useCallback } from "react";
-import { login as apiLogin, logout as apiLogout } from "@/api/auth.ts";
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  verify2fa as apiVerify2fa,
+} from "@/api/auth.ts";
 import type { LoginRequest } from "@/api/auth.ts";
+
+/**
+ * When the server responds with requires_2fa=true, the login flow pauses and
+ * the UI must collect a TOTP code from the user.  login() signals this by
+ * returning "requires_2fa" instead of void, carrying the opaque pre_auth_token
+ * the user must then pass to verify2fa() along with their TOTP code.
+ */
+export type LoginResult =
+  | { status: "ok" }
+  | { status: "requires_2fa"; preAuthToken: string };
 
 type AuthContextValue = {
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (data: LoginRequest) => Promise<void>;
+  login: (data: LoginRequest) => Promise<LoginResult>;
+  verify2fa: (preAuthToken: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function saveTokens(access_token: string, refresh_token: string) {
+  localStorage.setItem("access_token", access_token);
+  localStorage.setItem("refresh_token", refresh_token);
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
@@ -17,17 +37,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
   const [isLoading, setIsLoading] = useState(false);
 
-  const login = useCallback(async (data: LoginRequest) => {
+  const login = useCallback(async (data: LoginRequest): Promise<LoginResult> => {
     setIsLoading(true);
     try {
-      const tokens = await apiLogin(data);
-      localStorage.setItem("access_token", tokens.access_token);
-      localStorage.setItem("refresh_token", tokens.refresh_token);
+      const response = await apiLogin(data);
+
+      if (response.requires_2fa) {
+        // Server needs a TOTP code before issuing real tokens.
+        // Return the pre-auth token so the UI can render the 2FA step.
+        return { status: "requires_2fa", preAuthToken: response.pre_auth_token };
+      }
+
+      saveTokens(response.access_token, response.refresh_token);
       setIsAuthenticated(true);
+      return { status: "ok" };
     } finally {
       setIsLoading(false);
     }
   }, []);
+
+  const verify2fa = useCallback(
+    async (preAuthToken: string, code: string): Promise<void> => {
+      setIsLoading(true);
+      try {
+        const tokens = await apiVerify2fa(preAuthToken, code);
+        saveTokens(tokens.access_token, tokens.refresh_token);
+        setIsAuthenticated(true);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   const logout = useCallback(async () => {
     try {
@@ -42,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, verify2fa, logout }}>
       {children}
     </AuthContext.Provider>
   );
