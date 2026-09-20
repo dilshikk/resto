@@ -10,6 +10,9 @@ class TemplateItemCreate(BaseModel):
     sort_order: int = 0
     is_required: bool = True
     standard_code: str | None = None
+    # Confirmation requirements
+    requires_photo: bool = False
+    requires_comment: bool = False
 
 
 class TemplateItemOut(TemplateItemCreate):
@@ -77,6 +80,9 @@ class ChecklistItemOut(BaseModel):
     photos: list[ChecklistItemPhotoOut] = []
     standard_code: str | None = None
     standard_title: str | None = None
+    # Confirmation requirements (visible to frontend and bot)
+    requires_photo: bool = False
+    requires_comment: bool = False
 
 
 class ChecklistOut(BaseModel):
@@ -125,3 +131,6 @@ class CurrentItemOut(BaseModel):
     current_position: int  # 1-based index among all items
     standard_code: str | None = None
     standard_title: str | None = None
+    # Confirmation requirements — bot uses these to know what to prompt for
+    requires_photo: bool = False
+    requires_comment: bool = False
