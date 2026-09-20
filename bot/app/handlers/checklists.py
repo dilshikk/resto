@@ -4,8 +4,14 @@ from aiogram.types import CallbackQuery, Message
 
 from app import api_client
 from app.api_client import ApiError
-from app.keyboards import back_to_list_keyboard, checklists_keyboard, item_keyboard
-from app.states import ItemStates
+from app.keyboards import (
+    back_to_list_keyboard,
+    checklists_keyboard,
+    item_keyboard,
+    photo_checklist_keyboard,
+    photo_confirm_keyboard,
+)
+from app.states import ItemStates, PhotoStates
 
 router = Router(name="checklists")
 
@@ -147,12 +153,40 @@ async def receive_problem_photo(message: Message, state: FSMContext, bot) -> Non
     await _show_current_item_or_finish(message, message.from_user.id, checklist_id)
 
 
+# ── Standalone photo — safe two-step flow ─────────────────────────────────────
+#
+# Old behaviour: silently attach the photo to the first pending checklist's
+# current item with no confirmation.  If the employee had several active
+# checklists the photo would go to the wrong one.
+#
+# New behaviour (FSM):
+#   Step 0 — receive_standalone_photo()
+#     • 0 pending checklists → explain and exit.
+#     • 1 pending checklist, but no pending item → tell user and exit.
+#     • 1 pending checklist with a pending item → jump straight to the
+#       confirmation step (PhotoStates.waiting_for_confirmation).
+#     • 2+ pending checklists → ask the user to pick one first
+#       (PhotoStates.waiting_for_checklist_choice).
+#     The Telegram file_id is stored in FSM state; the actual download
+#     happens only after the user confirms, saving bandwidth on cancels.
+#
+#   Step 1a — photo_checklist_chosen() [only when 2+ checklists]
+#     Resolve the chosen checklist's current item and move to the
+#     confirmation step.
+#
+#   Step 1b — photo_confirmed() [confirmation]
+#     Download, upload to the API, show result, clear state.
+#
+#   Cancel — photo_cancelled() [any step]
+#     Clear state, tell the user the photo was discarded.
+
 @router.message(F.photo)
-async def receive_standalone_photo(message: Message, bot) -> None:  # noqa: ANN001
+async def receive_standalone_photo(message: Message, state: FSMContext) -> None:
     """
-    Photo sent outside a /problem flow: attach it to whichever item is currently
-    pending across today's checklists best-effort — otherwise ask the user to open
-    a checklist first via /today.
+    Entry point for a photo sent outside any active FSM state.
+
+    Stores the Telegram file_id in FSM state (no download yet) and
+    routes to either the checklist-picker or the confirmation step.
     """
     telegram_id = message.from_user.id
     try:
@@ -163,20 +197,118 @@ async def receive_standalone_photo(message: Message, bot) -> None:  # noqa: ANN0
 
     pending = [c for c in checklists if c["status"] != "completed"]
     if not pending:
-        await message.answer("Нет активных чек-листов, к которым можно приложить фото. Отправьте /today.")
+        await message.answer(
+            "Нет активных чек-листов, к которым можно приложить фото.\n"
+            "Отправьте /today, чтобы увидеть список."
+        )
         return
 
-    checklist_id = pending[0]["id"]
+    # Store the file_id — download only after the user confirms.
+    file_id = message.photo[-1].file_id
+    await state.update_data(file_id=file_id)
+
+    if len(pending) == 1:
+        # One active checklist — skip straight to confirmation.
+        checklist_id = pending[0]["id"]
+        item = await api_client.get_current_item(telegram_id, checklist_id)
+        if item is None:
+            await state.clear()
+            await message.answer(
+                "В активном чек-листе все пункты уже выполнены. "
+                "Фото не прикреплено."
+            )
+            return
+        await state.update_data(checklist_id=checklist_id, item_id=item["id"])
+        await state.set_state(PhotoStates.waiting_for_confirmation)
+        await message.answer(
+            f"Прикрепить фото к текущему пункту?\n\n"
+            f"📋 {pending[0]['template_name']} → «{item['title']}»",
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+        )
+    else:
+        # Several active checklists — ask the user to pick the right one.
+        await state.set_state(PhotoStates.waiting_for_checklist_choice)
+        await message.answer(
+            "У вас несколько активных чек-листов. К какому прикрепить фото?",
+            reply_markup=photo_checklist_keyboard(pending),
+        )
+
+
+@router.callback_query(PhotoStates.waiting_for_checklist_choice, F.data.startswith("photo_cl:"))
+async def photo_checklist_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    """User picked a checklist from the list — resolve its current item."""
+    await callback.answer()
+    checklist_id = int(callback.data.split(":")[1])
+    telegram_id = callback.from_user.id
+
     item = await api_client.get_current_item(telegram_id, checklist_id)
     if item is None:
-        await message.answer("В текущем чек-листе все пункты уже выполнены.")
+        await state.clear()
+        await callback.message.answer(
+            "В выбранном чек-листе нет невыполненных пунктов. "
+            "Фото не прикреплено."
+        )
         return
 
-    file = await bot.get_file(message.photo[-1].file_id)
-    file_bytes = await bot.download_file(file.file_path)
+    await state.update_data(checklist_id=checklist_id, item_id=item["id"])
+    await state.set_state(PhotoStates.waiting_for_confirmation)
+
+    # Try to edit the original message instead of flooding with new ones.
     try:
-        await api_client.upload_item_photo(telegram_id, checklist_id, item["id"], file_bytes.read(), "confirm.jpg")
+        await callback.message.edit_text(
+            f"Прикрепить фото к текущему пункту?\n\n"
+            f"📋 → «{item['title']}»",
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+        )
+    except Exception:
+        await callback.message.answer(
+            f"Прикрепить фото к текущему пункту?\n\n"
+            f"📋 → «{item['title']}»",
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+        )
+
+
+@router.callback_query(PhotoStates.waiting_for_confirmation, F.data.startswith("photo_confirm:"))
+async def photo_confirmed(callback: CallbackQuery, state: FSMContext, bot) -> None:  # noqa: ANN001
+    """User confirmed — download and upload the photo."""
+    await callback.answer()
+    data = await state.get_data()
+    checklist_id = data["checklist_id"]
+    item_id = data["item_id"]
+    file_id = data["file_id"]
+    telegram_id = callback.from_user.id
+
+    await state.clear()
+
+    # Resolve a fresh item title for the confirmation message.
+    item = await api_client.get_current_item(telegram_id, checklist_id)
+    item_title = item["title"] if item else "пункт"
+
+    try:
+        file = await bot.get_file(file_id)
+        file_bytes = await bot.download_file(file.file_path)
+        await api_client.upload_item_photo(
+            telegram_id, checklist_id, item_id, file_bytes.read(), "confirm.jpg"
+        )
     except ApiError as e:
-        await message.answer(f"Не удалось сохранить фото: {e.detail}")
+        await callback.message.answer(f"Не удалось сохранить фото: {e.detail}")
         return
-    await message.answer(f"Фото прикреплено к пункту «{item['title']}» ✅")
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await callback.message.answer(f"Фото прикреплено к пункту «{item_title}» ✅")
+
+
+@router.callback_query(F.data == "photo_cancel")
+async def photo_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
+    """User cancelled at any step of the photo flow."""
+    await callback.answer()
+    await state.clear()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.message.answer("Фото отменено. Отправьте /today, чтобы продолжить работу.")
