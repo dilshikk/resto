@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.rate_limit import limiter
 from app.tasks.revoked_token_cleanup import run_revoked_token_cleanup_loop
+from app.tasks.checklist_scheduler import run_checklist_scheduler_loop
 from app.routers import (
     auth,
     branches,
@@ -33,20 +34,29 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    cleanup_task = asyncio.create_task(run_revoked_token_cleanup_loop())
+    cleanup_task = asyncio.create_task(
+        run_revoked_token_cleanup_loop(),
+        name="revoked_token_cleanup",
+    )
+    scheduler_task = asyncio.create_task(
+        run_checklist_scheduler_loop(),
+        name="checklist_scheduler",
+    )
+
     try:
         yield
     finally:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        for task in (cleanup_task, scheduler_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.6.0",
+    version="1.7.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
