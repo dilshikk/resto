@@ -1,8 +1,10 @@
 import random
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import get_current_user, get_current_web_user, require_manager
 from app.database import get_db
@@ -24,6 +26,9 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 
 INVITE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _VALID_LANGS = frozenset({"ru", "uz", "en"})
+_MAX_INVITE_ATTEMPTS = 10
+
+logger = logging.getLogger(__name__)
 
 
 def _gen_invite() -> str:
@@ -103,6 +108,44 @@ async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
     branches = {emp.primary_branch_id: branch} if branch else {}
     claimed = {emp.id} if account else set()
     return _employee_out_from_cache(emp, roles, branches, claimed)
+
+
+# ── invite-code helper ───────────────────────────────────────────────────────────────
+
+async def _insert_employee_with_unique_invite(
+    emp: Employee,
+    db: AsyncSession,
+) -> None:
+    """
+    Insert *emp* into the session and commit, retrying with a fresh invite
+    code on the rare event of a UNIQUE constraint violation on invite_code.
+
+    The DB-level UNIQUE constraint on employees.invite_code is the last line
+    of defence against concurrent inserts that pass the application-level
+    SELECT check simultaneously.  Retrying here keeps the caller simple and
+    makes the uniqueness guarantee ironclad even under high concurrency.
+    """
+    for attempt in range(_MAX_INVITE_ATTEMPTS):
+        try:
+            db.add(emp)
+            await db.flush()  # hit the constraint without a full commit
+            return  # success — caller is responsible for commit
+        except IntegrityError as exc:
+            await db.rollback()
+            err = str(exc.orig).lower()
+            if "uq_employees_invite_code" not in err and "invite_code" not in err:
+                # Different constraint — re-raise immediately.
+                raise
+            emp.invite_code = _gen_invite()
+            logger.warning(
+                "invite_code collision on attempt %d/%d, retrying with %s",
+                attempt + 1, _MAX_INVITE_ATTEMPTS, emp.invite_code,
+            )
+
+    raise HTTPException(
+        status_code=500,
+        detail="\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0443\u043d\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0439 invite-\u043a\u043e\u0434. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
+    )
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────────
@@ -215,13 +258,6 @@ async def create_employee(
                 detail="\u041d\u0435\u043b\u044c\u0437\u044f \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430 \u0432 \u0444\u0438\u043b\u0438\u0430\u043b, \u043a \u043a\u043e\u0442\u043e\u0440\u043e\u043c\u0443 \u0443 \u0432\u0430\u0441 \u043d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430",
             )
 
-    invite_code = _gen_invite()
-    for _ in range(5):
-        existing = (await db.execute(select(Employee).where(Employee.invite_code == invite_code))).scalar_one_or_none()
-        if not existing:
-            break
-        invite_code = _gen_invite()
-
     lang = data.preferred_language if data.preferred_language in _VALID_LANGS else "ru"
     emp = Employee(
         full_name=data.full_name.strip(),
@@ -230,11 +266,11 @@ async def create_employee(
         primary_branch_id=data.primary_branch_id,
         additional_branch_ids=data.additional_branch_ids,
         status="active",
-        invite_code=invite_code,
+        invite_code=_gen_invite(),
         hired_at=data.hired_at,
         preferred_language=lang,
     )
-    db.add(emp)
+    await _insert_employee_with_unique_invite(emp, db)
     await db.commit()
     await db.refresh(emp)
     return await _build_employee_out(emp, db)
@@ -308,11 +344,28 @@ async def regenerate_invite(
 
     await _assert_branch_access_to_employee(emp, current, db)
 
-    new_code = _gen_invite()
-    emp.invite_code = new_code
-    emp.telegram_id = None
+    # Retry loop guards against the (very rare) collision on regeneration.
+    for attempt in range(_MAX_INVITE_ATTEMPTS):
+        new_code = _gen_invite()
+        emp.invite_code = new_code
+        emp.telegram_id = None
+        try:
+            await db.flush()
+            break
+        except IntegrityError as exc:
+            await db.rollback()
+            err = str(exc.orig).lower()
+            if "uq_employees_invite_code" not in err and "invite_code" not in err:
+                raise
+            logger.warning(
+                "regenerate_invite: collision on attempt %d/%d for employee %d",
+                attempt + 1, _MAX_INVITE_ATTEMPTS, employee_id,
+            )
+    else:
+        raise HTTPException(status_code=500, detail="\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0443\u043d\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0439 invite-\u043a\u043e\u0434.")
+
     await db.commit()
-    return {"invite_code": new_code}
+    return {"invite_code": emp.invite_code}
 
 
 @router.post("/claim", response_model=EmployeeOut)
@@ -423,6 +476,6 @@ async def bootstrap_director(
         additional_branch_ids=[],
         preferred_language="ru",
     )
-    db.add(emp)
+    await _insert_employee_with_unique_invite(emp, db)
     await db.commit()
     return {"ok": True, "employee_id": emp.id, "branch_id": branch.id}

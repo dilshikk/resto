@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, String, Boolean, DateTime, func, ForeignKey, ARRAY, Integer
+from sqlalchemy import BigInteger, String, Boolean, DateTime, func, ForeignKey, ARRAY, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 import datetime
@@ -6,6 +6,12 @@ import datetime
 
 class Employee(Base):
     __tablename__ = "employees"
+    __table_args__ = (
+        # Enforce uniqueness at the DB level so that concurrent inserts
+        # cannot produce duplicate invite codes even if the application-level
+        # retry loop has a race window.
+        UniqueConstraint("invite_code", name="uq_employees_invite_code"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False)
@@ -25,7 +31,7 @@ class Employee(Base):
 
 
 class EmployeeAccount(Base):
-    """Связь employee <-> user (веб-аккаунт менеджера)."""
+    """\u0421\u0432\u044f\u0437\u044c employee <-> user (\u0432\u0435\u0431-\u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u0430)."""
     __tablename__ = "employee_accounts"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
