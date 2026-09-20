@@ -8,11 +8,12 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
-from app.database import engine, Base
-from app.rate_limit import limiter
+from app.database import engine, Base, AsyncSessionLocal
+from app.rate_limit import limiter, login_attempt_tracker
 from app.tasks.revoked_token_cleanup import run_revoked_token_cleanup_loop
 from app.tasks.checklist_scheduler import run_checklist_scheduler_loop
 from app.tasks.overdue_escalation import run_overdue_escalation_loop
+from app.tasks.login_attempt_cleanup import run_login_attempt_cleanup_loop
 from app.routers import (
     auth,
     branches,
@@ -35,6 +36,10 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Wire the persistent login-attempt tracker to the DB session factory.
+    # Must happen after the engine is ready and before any request is served.
+    login_attempt_tracker.configure(AsyncSessionLocal)
+
     cleanup_task = asyncio.create_task(
         run_revoked_token_cleanup_loop(),
         name="revoked_token_cleanup",
@@ -47,11 +52,15 @@ async def lifespan(app: FastAPI):
         run_overdue_escalation_loop(),
         name="overdue_escalation",
     )
+    login_cleanup_task = asyncio.create_task(
+        run_login_attempt_cleanup_loop(),
+        name="login_attempt_cleanup",
+    )
 
     try:
         yield
     finally:
-        for task in (cleanup_task, scheduler_task, escalation_task):
+        for task in (cleanup_task, scheduler_task, escalation_task, login_cleanup_task):
             task.cancel()
             try:
                 await task
@@ -61,14 +70,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.8.0",
+    version="1.9.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
 
-# ── Rate limiter (SlowAPI) ────────────────────────────────────────────────────
-# The limiter singleton is defined in app/rate_limit.py and shared with routers.
-# The exception handler converts RateLimitExceeded into a standard HTTP 429.
+# ── Rate limiter (SlowAPI) ────────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

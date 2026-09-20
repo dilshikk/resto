@@ -10,6 +10,7 @@ from app.models.photo import Photo
 from app.models.standard import Standard
 from app.models.audit_log import AuditLog
 from app.models.revoked_token import RevokedToken
+from app.models.login_attempt import LoginAttempt
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
@@ -20,4 +21,5 @@ __all__ = [
     "Standard",
     "AuditLog",
     "RevokedToken",
+    "LoginAttempt",
 ]

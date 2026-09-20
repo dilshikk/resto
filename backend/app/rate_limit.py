@@ -8,25 +8,35 @@ Two protection layers:
    SlowAPI reads the client IP from the request and returns HTTP 429
    when the limit is exceeded.
 
-2. Per-email lockout (LoginAttemptTracker)
-   Tracks consecutive failed password attempts per email address.
-   After MAX_FAILURES failures the account is locked for LOCKOUT_SECONDS.
-   A successful login resets the counter.  This catches distributed
-   brute-force attacks that rotate IPs to stay under the per-IP limit.
+2. Per-email lockout (DbLoginAttemptTracker)
+   Tracks consecutive failed password attempts per email address in the
+   `login_attempts` PostgreSQL table.  After MAX_FAILURES failures the
+   account is locked for LOCKOUT_SECONDS.  A successful login removes the
+   row.
 
-State for layer 2 is held in process memory.  This is sufficient for
-a single-replica deployment (the common case here).  If the service
-is ever scaled to multiple replicas, replace LoginAttemptTracker with
-a Redis-backed counter using the `limits` library's RedisStorage.
+   Storing state in the database (rather than process memory) means:
+     - lockouts survive backend restarts and deployments;
+     - all replicas share the same counters, so a distributed attacker
+       that hits different pods still hits the same limit.
+
+   The counter increment uses a PostgreSQL INSERT … ON CONFLICT DO UPDATE
+   so concurrent requests update the counter atomically without races.
 """
 
-import time
-import threading
-from collections import defaultdict
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+
+from sqlalchemy import case, delete
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+if TYPE_CHECKING:
+    pass
 
 # ── Layer 1: per-IP SlowAPI limiter ──────────────────────────────────────────
 # Attach to the FastAPI app in main.py:
@@ -34,40 +44,36 @@ from slowapi.util import get_remote_address
 #   app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Then decorate endpoints:
 #   @limiter.limit("10/minute")
-#   async def login(request: Request, ...):
+#   async def login(request: Request, ...): ...
 limiter = Limiter(key_func=get_remote_address)
 
 
-# ── Layer 2: per-email in-process lockout ─────────────────────────────────────
-_MAX_FAILURES: int = 5        # consecutive wrong passwords before lockout
+# ── Layer 2: per-email DB-backed lockout ──────────────────────────────────────
+_MAX_FAILURES: int = 5         # consecutive wrong passwords before lockout
 _LOCKOUT_SECONDS: float = 900  # 15 minutes
-_CLEANUP_INTERVAL: float = 3600  # purge stale entries every hour
 
 
-@dataclass
-class _AccountState:
-    failures: int = 0
-    locked_until: float = 0.0
-    last_failure: float = field(default_factory=time.monotonic)
-
-
-class LoginAttemptTracker:
+class DbLoginAttemptTracker:
     """
-    Thread-safe per-email failure counter with automatic timed lockout.
+    Persistent, multi-replica-safe per-email failure counter.
+
+    State lives in the ``login_attempts`` PostgreSQL table so it survives
+    process restarts and is consistent across all backend replicas.
+
+    Call :meth:`configure` once at application startup (after the engine
+    is ready) to inject the session factory before any endpoint is served.
 
     Usage::
 
-        tracker = LoginAttemptTracker()
+        # in lifespan / startup:
+        login_attempt_tracker.configure(AsyncSessionLocal)
 
-        # Before checking the password:
-        if tracker.is_locked(email):
-            raise HTTPException(429, f"Locked for {tracker.seconds_remaining(email)}s")
-
-        # After a wrong password:
-        tracker.record_failure(email)
-
-        # After a correct password:
-        tracker.record_success(email)
+        # in the login endpoint:
+        if await login_attempt_tracker.is_locked(email):
+            raise HTTPException(429, ...)
+        ...
+        await login_attempt_tracker.record_failure(email)   # wrong password
+        await login_attempt_tracker.record_success(email)   # correct password
     """
 
     def __init__(
@@ -77,54 +83,100 @@ class LoginAttemptTracker:
     ) -> None:
         self._max_failures = max_failures
         self._lockout_seconds = lockout_seconds
-        self._state: dict[str, _AccountState] = defaultdict(_AccountState)
-        self._lock = threading.Lock()
-        self._last_cleanup = time.monotonic()
+        # Injected at startup via configure(); typed loosely to avoid a
+        # circular import at module load time.
+        self._session_factory: async_sessionmaker[AsyncSession] | None = None
 
-    def is_locked(self, email: str) -> bool:
+    def configure(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        """Inject the async session factory.  Must be called before any login attempt."""
+        self._session_factory = session_factory
+
+    def _get_factory(self) -> async_sessionmaker[AsyncSession]:
+        if self._session_factory is None:
+            raise RuntimeError(
+                "DbLoginAttemptTracker has not been configured. "
+                "Call login_attempt_tracker.configure(AsyncSessionLocal) at startup."
+            )
+        return self._session_factory
+
+    async def is_locked(self, email: str) -> bool:
         """Return True if the account is currently locked out."""
-        with self._lock:
-            s = self._state.get(email)
-            if s is None:
-                return False
-            return time.monotonic() < s.locked_until
+        from app.models.login_attempt import LoginAttempt  # local import avoids circular dep
 
-    def seconds_remaining(self, email: str) -> int:
+        async with self._get_factory()() as db:
+            row = await db.get(LoginAttempt, email)
+            if row is None or row.locked_until is None:
+                return False
+            return datetime.now(timezone.utc) < row.locked_until
+
+    async def seconds_remaining(self, email: str) -> int:
         """Seconds until the lockout expires (0 if not locked)."""
-        with self._lock:
-            s = self._state.get(email)
-            if s is None:
+        from app.models.login_attempt import LoginAttempt
+
+        async with self._get_factory()() as db:
+            row = await db.get(LoginAttempt, email)
+            if row is None or row.locked_until is None:
                 return 0
-            remaining = s.locked_until - time.monotonic()
+            remaining = (row.locked_until - datetime.now(timezone.utc)).total_seconds()
             return max(0, int(remaining))
 
-    def record_failure(self, email: str) -> None:
-        """Increment the failure counter; impose a lockout when the threshold is reached."""
-        with self._lock:
-            self._maybe_cleanup()
-            s = self._state[email]
-            s.failures += 1
-            s.last_failure = time.monotonic()
-            if s.failures >= self._max_failures:
-                s.locked_until = time.monotonic() + self._lockout_seconds
+    async def record_failure(self, email: str) -> None:
+        """
+        Atomically increment the failure counter.
 
-    def record_success(self, email: str) -> None:
-        """Clear the failure state after a successful login."""
-        with self._lock:
-            self._state.pop(email, None)
+        Uses a PostgreSQL upsert so concurrent requests from different
+        workers/replicas never race on the same row: the increment happens
+        inside the database engine, not in application code.
 
-    def _maybe_cleanup(self) -> None:
-        """Remove entries that have been inactive long enough to never lock again."""
-        now = time.monotonic()
-        if now - self._last_cleanup < _CLEANUP_INTERVAL:
-            return
-        # Keep entries whose lockout window could still be active.
-        cutoff = now - self._lockout_seconds
-        stale = [k for k, v in self._state.items() if v.last_failure < cutoff]
-        for k in stale:
-            del self._state[k]
-        self._last_cleanup = now
+        When the counter reaches the threshold the locked_until column is
+        set in the same statement, so there is no window between counting
+        and locking.
+        """
+        from app.models.login_attempt import LoginAttempt
+
+        now = datetime.now(timezone.utc)
+        lock_at = now + timedelta(seconds=self._lockout_seconds)
+
+        async with self._get_factory()() as db:
+            stmt = (
+                pg_insert(LoginAttempt)
+                .values(
+                    email=email,
+                    failures=1,
+                    last_failure=now,
+                    locked_until=None,
+                )
+                .on_conflict_do_update(
+                    index_elements=["email"],
+                    set_={
+                        "failures": LoginAttempt.failures + 1,
+                        "last_failure": now,
+                        # Set locked_until only when we cross the threshold;
+                        # preserve any existing lockout otherwise.
+                        "locked_until": case(
+                            (
+                                LoginAttempt.failures + 1 >= self._max_failures,
+                                lock_at,
+                            ),
+                            else_=LoginAttempt.locked_until,
+                        ),
+                    },
+                )
+            )
+            await db.execute(stmt)
+            await db.commit()
+
+    async def record_success(self, email: str) -> None:
+        """Remove the failure record after a successful login."""
+        from app.models.login_attempt import LoginAttempt
+
+        async with self._get_factory()() as db:
+            await db.execute(
+                delete(LoginAttempt).where(LoginAttempt.email == email)
+            )
+            await db.commit()
 
 
-# Module-level singleton — shared across all requests in the same process.
-login_attempt_tracker = LoginAttemptTracker()
+# Module-level singleton — shared across all coroutines in the same process.
+# configure() must be called in the FastAPI lifespan before any request is handled.
+login_attempt_tracker = DbLoginAttemptTracker()

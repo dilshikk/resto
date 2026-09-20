@@ -50,9 +50,6 @@ _REFRESH_COOKIE = "refresh_token"
 _REFRESH_COOKIE_PATH = "/api/v1/auth"
 
 # Stable integer key for the advisory lock that guards first-user creation.
-# The value itself is arbitrary; it just needs to be unique across all locks
-# used in this application.  Using a named constant avoids magic numbers and
-# makes it easy to search for all lock sites.
 _FIRST_USER_LOCK_KEY = 0x4D41_444F  # "MADO" in hex
 
 
@@ -111,10 +108,10 @@ async def login(
     Layer 1 — per-IP rate limit (SlowAPI): max 10 requests/minute from a
     single IP address.  Returns HTTP 429 on excess.
 
-    Layer 2 — per-email lockout (LoginAttemptTracker): after 5 consecutive
+    Layer 2 — per-email lockout (DbLoginAttemptTracker): after 5 consecutive
     wrong passwords the account is locked for 15 minutes regardless of the
-    source IP.  This stops distributed attacks that rotate IPs to bypass the
-    per-IP limit.  A correct password resets the failure counter.
+    source IP.  Counters are stored in PostgreSQL so they survive restarts
+    and are shared across all replicas.  A correct password resets the counter.
 
     On success the refresh token is delivered as an httpOnly cookie — it is
     never exposed in the JSON response body.
@@ -122,8 +119,8 @@ async def login(
     email = form_data.username.lower().strip()
 
     # ── Layer 2: check per-email lockout ─────────────────────────────────────
-    if login_attempt_tracker.is_locked(email):
-        secs = login_attempt_tracker.seconds_remaining(email)
+    if await login_attempt_tracker.is_locked(email):
+        secs = await login_attempt_tracker.seconds_remaining(email)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
@@ -137,13 +134,13 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(form_data.password, user.password_hash):
-        login_attempt_tracker.record_failure(email)
+        await login_attempt_tracker.record_failure(email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный email или пароль",
         )
 
-    login_attempt_tracker.record_success(email)
+    await login_attempt_tracker.record_success(email)
 
     # ── 2FA gate ──────────────────────────────────────────────────────────────
     if user.is_2fa_enabled and user.totp_secret:
@@ -305,22 +302,16 @@ async def logout(
     response: Response,
     body: LogoutRequest | None = None,
     token: str = Depends(oauth2_scheme),
-    # Use get_current_web_user (not get_current_user) so that users who have
-    # not yet linked an employee profile can still log out.
     current_user: User = Depends(get_current_web_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     End the session: revoke the access token and the refresh token (from the
     httpOnly cookie), then clear the cookie.
-
-    The optional body refresh_token is also revoked if present (backward compat).
     """
-    # Revoke the access token used for this request.
     access_payload = decode_token(token, "access")
     await revoke_token(access_payload, db)
 
-    # Revoke the httpOnly cookie refresh token.
     cookie_refresh = request.cookies.get(_REFRESH_COOKIE)
     if cookie_refresh:
         try:
@@ -329,7 +320,6 @@ async def logout(
         except HTTPException:
             pass
 
-    # Also revoke any refresh token sent in the body (backward compat).
     if body and body.refresh_token:
         try:
             body_payload = decode_token(body.refresh_token, "refresh")
@@ -349,25 +339,11 @@ async def create_user_internal(
 ):
     """Создаёт веб-пользователя и привязывает его к сотруднику. Только при пустой БД.
 
-    Защита от гонки (TOCTOU):
-    ──────────────────────────
-    Наивная проверка «SELECT COUNT(*) → если 0, то INSERT» не атомарна:
-    два одновременных запроса могут оба прочитать count=0 и оба создать
-    пользователя, что породит конкурирующих администраторов.
-
-    Решение — транзакционный advisory lock PostgreSQL (pg_advisory_xact_lock).
-    Первый вызов захватывает lock; все остальные блокируются на этой строке
-    до завершения первой транзакции.  После коммита/отката lock освобождается
-    автоматически — никакой ручной очистки не требуется, а зависание при сбое
-    невозможно.  Внутри критической секции проверка count=0 становится
-    атомарной: второй запрос, получив lock, уже увидит count=1 и вернёт 403.
+    Защищено от гонки через транзакционный advisory lock PostgreSQL:
+    второй одновременный запрос увидит count=1 и получит 403.
     """
-    # Сериализуем конкурирующие вызовы на уровне БД.
-    # pg_advisory_xact_lock блокирует транзакцию, пока lock занят другой
-    # транзакцией; lock освобождается автоматически при коммите/откате.
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)").bindparams(key=_FIRST_USER_LOCK_KEY))
 
-    # Повторная проверка внутри критической секции — теперь атомарна.
     count_result = await db.execute(select(func.count()).select_from(User))
     count = count_result.scalar_one()
     if count > 0:
