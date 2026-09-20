@@ -33,3 +33,33 @@ def back_to_list_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ К списку чек-листов", callback_data="back:checklists")]]
     )
+
+
+def photo_checklist_keyboard(checklists: list[dict]) -> InlineKeyboardMarkup:
+    """
+    Shown when the user sends a standalone photo but has several active
+    checklists — lets them pick the exact one the photo belongs to.
+    """
+    rows = []
+    for cl in checklists:
+        label = SHIFT_LABELS.get(cl["shift"], cl["shift"])
+        text = f"📋 {cl['template_name']} ({label})"
+        rows.append([InlineKeyboardButton(text=text, callback_data=f"photo_cl:{cl['id']}")])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="photo_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def photo_confirm_keyboard(checklist_id: int, item_title: str) -> InlineKeyboardMarkup:
+    """
+    Confirmation step: shows the target item name and asks the user to
+    approve before the photo is actually uploaded.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"✅ Прикрепить к «{item_title[:40]}»",
+                callback_data=f"photo_confirm:{checklist_id}",
+            )],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="photo_cancel")],
+        ]
+    )
