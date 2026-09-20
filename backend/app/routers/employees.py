@@ -2,7 +2,7 @@ import random
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from app.auth import get_current_user, get_current_web_user, require_manager
 from app.database import get_db
@@ -129,6 +129,23 @@ async def list_employees(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Return employees visible to the current manager.
+
+    Previously this fetched ALL employees with SELECT * FROM employees, then
+    filtered the result set in Python.  On a large team this transfers every
+    row across the DB connection even when only a single branch was requested.
+
+    After this change filtering is pushed entirely into SQL:
+      • Supervisors/directors (permission_level >= 2): optional WHERE on
+        primary_branch_id or the JSON additional_branch_ids array.
+      • Managers (permission_level == 1): WHERE clause scoped to their own
+        allowed branches — only matching rows are transferred.
+
+    In both cases the batch-load of roles, branches, and claimed accounts
+    is still done with 3 IN-queries so the total cost is 4 queries, not
+    1 + N×3.
+    """
     role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
     can_all = bool(role and role.permission_level >= 2)
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
@@ -136,26 +153,39 @@ async def list_employees(
     if branch_id is not None and not can_all and branch_id not in own_allowed_branches:
         raise HTTPException(status_code=403, detail="Нет доступа к сотрудникам другого филиала")
 
-    all_emps = (await db.execute(select(Employee))).scalars().all()
+    query = select(Employee)
 
-    visible: list[Employee] = []
-    for emp in all_emps:
-        if branch_id is not None:
-            if emp.primary_branch_id == branch_id or branch_id in (emp.additional_branch_ids or []):
-                visible.append(emp)
-        elif can_all:
-            visible.append(emp)
-        elif emp.primary_branch_id in own_allowed_branches or bool(
-            own_allowed_branches & set(emp.additional_branch_ids or [])
-        ):
-            visible.append(emp)
+    if branch_id is not None:
+        # Filter to employees whose primary_branch_id matches OR who have the
+        # branch in their additional_branch_ids JSON array.
+        # The JSON contains() operator works on PostgreSQL JSONB / JSON columns.
+        query = query.where(
+            or_(
+                Employee.primary_branch_id == branch_id,
+                Employee.additional_branch_ids.contains([branch_id]),
+            )
+        )
+    elif not can_all:
+        # Manager: only employees in any of their allowed branches.
+        branch_list = list(own_allowed_branches)
+        query = query.where(
+            or_(
+                Employee.primary_branch_id.in_(branch_list),
+                # Check whether any of the manager's branches appears in the
+                # employee's additional_branch_ids JSON array.
+                *[Employee.additional_branch_ids.contains([bid]) for bid in branch_list],
+            )
+        )
+    # else: supervisor/director with no branch filter — return all employees.
+
+    visible = (await db.execute(query)).scalars().all()
 
     if not visible:
         return []
 
     # ── batch-load all referenced rows in 3 queries instead of 3×N ────────────
     role_ids = {e.role_id for e in visible}
-    branch_ids = {e.primary_branch_id for e in visible}
+    branch_ids_set = {e.primary_branch_id for e in visible}
     emp_ids = {e.id for e in visible}
 
     roles_map: dict[int, Role] = {
@@ -164,7 +194,7 @@ async def list_employees(
     }
     branches_map: dict[int, Branch] = {
         b.id: b
-        for b in (await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))).scalars().all()
+        for b in (await db.execute(select(Branch).where(Branch.id.in_(branch_ids_set)))).scalars().all()
     }
     claimed_ids: set[int] = {
         a.employee_id
