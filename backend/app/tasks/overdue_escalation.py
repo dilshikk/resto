@@ -22,8 +22,14 @@ notification wave has already been dispatched
 The task sets them atomically in the same commit that inserts the
 Notification rows, so restarts and crashes are safe — no duplicate alerts.
 
+Important: the timestamp is set ONLY when at least one notification is
+actually sent.  If the branch currently has no managers (or supervisors),
+the column is left NULL so the wave is retried on the next tick — meaning
+the notification will be delivered as soon as a manager is later assigned
+to the branch.
+
 Why asyncio loop, not APScheduler/Celery
-─────────────────────────────────────────
+──────────────────────────────────────────
 Consistent with the existing checklist_scheduler.py and
 revoked_token_cleanup.py patterns: no extra scheduler deps, works
 correctly in a single-process Docker container.
@@ -109,7 +115,7 @@ async def _run_escalation_check() -> None:
         )
 
         for cl in overdue:
-            # ── Wave 1: Manager notification ──────────────────────────────────
+            # ── Wave 1: Manager notification ────────────────────────────────────
             # Fires OVERDUE_MANAGER_NOTIFY_MINUTES after due_at.
             if (
                 cl.overdue_manager_notified_at is None
@@ -134,6 +140,11 @@ async def _run_escalation_check() -> None:
                                 f" не выполнен в срок. Требуется вмешательство."
                             ),
                         )
+                    # Stamp ONLY after notifications were successfully sent.
+                    # Leaving the column NULL when no managers exist ensures
+                    # the wave is retried on the next tick, so the notification
+                    # is delivered as soon as a manager is later assigned.
+                    cl.overdue_manager_notified_at = now
                     logger.info(
                         "escalation: checklist %d — manager wave sent to %d employee(s)",
                         cl.id,
@@ -141,14 +152,13 @@ async def _run_escalation_check() -> None:
                     )
                 else:
                     logger.warning(
-                        "escalation: checklist %d — no managers found for branch %d; skipping wave 1",
+                        "escalation: checklist %d — no managers found for branch %d; "
+                        "will retry on next tick",
                         cl.id,
                         cl.branch_id,
                     )
-                # Always stamp the column so we don't retry on every tick.
-                cl.overdue_manager_notified_at = now
 
-            # ── Wave 2: Supervisor escalation ─────────────────────────────────
+            # ── Wave 2: Supervisor escalation ──────────────────────────────────
             # Fires OVERDUE_SUPERVISOR_NOTIFY_MINUTES after due_at.
             if (
                 cl.overdue_supervisor_notified_at is None
@@ -178,6 +188,8 @@ async def _run_escalation_check() -> None:
                                 f" Требуется контроль управляющего."
                             ),
                         )
+                    # Stamp ONLY after notifications were successfully sent.
+                    cl.overdue_supervisor_notified_at = now
                     logger.info(
                         "escalation: checklist %d — supervisor wave sent to %d employee(s)",
                         cl.id,
@@ -185,11 +197,11 @@ async def _run_escalation_check() -> None:
                     )
                 else:
                     logger.warning(
-                        "escalation: checklist %d — no supervisors found for branch %d; skipping wave 2",
+                        "escalation: checklist %d — no supervisors found for branch %d; "
+                        "will retry on next tick",
                         cl.id,
                         cl.branch_id,
                     )
-                cl.overdue_supervisor_notified_at = now
 
         await db.commit()
 
