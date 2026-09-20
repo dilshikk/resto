@@ -47,7 +47,7 @@ async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSess
         )
 
 
-# ── batch-aware builder ───────────────────────────────────────────────────────
+# ── batch-aware builder ────────────────────────────────────────────────────
 
 def _employee_out_from_cache(
     emp: Employee,
@@ -55,11 +55,6 @@ def _employee_out_from_cache(
     branches: dict[int, Branch],
     claimed_employee_ids: set[int],
 ) -> EmployeeOut:
-    """
-    Build an EmployeeOut from pre-fetched lookup dicts.
-    All four collections must cover every id present in `emp`; callers are
-    responsible for loading them in a single batch query each.
-    """
     role = roles.get(emp.role_id)
     branch = branches.get(emp.primary_branch_id)
     return EmployeeOut(
@@ -129,23 +124,6 @@ async def list_employees(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return employees visible to the current manager.
-
-    Previously this fetched ALL employees with SELECT * FROM employees, then
-    filtered the result set in Python.  On a large team this transfers every
-    row across the DB connection even when only a single branch was requested.
-
-    After this change filtering is pushed entirely into SQL:
-      • Supervisors/directors (permission_level >= 2): optional WHERE on
-        primary_branch_id or the JSON additional_branch_ids array.
-      • Managers (permission_level == 1): WHERE clause scoped to their own
-        allowed branches — only matching rows are transferred.
-
-    In both cases the batch-load of roles, branches, and claimed accounts
-    is still done with 3 IN-queries so the total cost is 4 queries, not
-    1 + N×3.
-    """
     role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
     can_all = bool(role and role.permission_level >= 2)
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
@@ -156,9 +134,6 @@ async def list_employees(
     query = select(Employee)
 
     if branch_id is not None:
-        # Filter to employees whose primary_branch_id matches OR who have the
-        # branch in their additional_branch_ids JSON array.
-        # The JSON contains() operator works on PostgreSQL JSONB / JSON columns.
         query = query.where(
             or_(
                 Employee.primary_branch_id == branch_id,
@@ -166,24 +141,19 @@ async def list_employees(
             )
         )
     elif not can_all:
-        # Manager: only employees in any of their allowed branches.
         branch_list = list(own_allowed_branches)
         query = query.where(
             or_(
                 Employee.primary_branch_id.in_(branch_list),
-                # Check whether any of the manager's branches appears in the
-                # employee's additional_branch_ids JSON array.
                 *[Employee.additional_branch_ids.contains([bid]) for bid in branch_list],
             )
         )
-    # else: supervisor/director with no branch filter — return all employees.
 
     visible = (await db.execute(query)).scalars().all()
 
     if not visible:
         return []
 
-    # ── batch-load all referenced rows in 3 queries instead of 3×N ────────────
     role_ids = {e.role_id for e in visible}
     branch_ids_set = {e.primary_branch_id for e in visible}
     emp_ids = {e.id for e in visible}
@@ -204,7 +174,6 @@ async def list_employees(
             )
         ).scalars().all()
     }
-    # ──────────────────────────────────────────────────────────────────────────
 
     return [_employee_out_from_cache(e, roles_map, branches_map, claimed_ids) for e in visible]
 
@@ -407,13 +376,17 @@ async def bootstrap_director(
     if count > 0:
         raise HTTPException(status_code=409, detail="Система уже настроена")
 
+    branch_name = body.branch_name.strip()
+    if not branch_name:
+        raise HTTPException(status_code=422, detail="Название филиала не может быть пустым")
+
     director_role = (await db.execute(select(Role).where(Role.code == "director"))).scalar_one_or_none()
     if not director_role:
         director_role = Role(code="director", name_ru="Директор", category="management", permission_level=3)
         db.add(director_role)
         await db.flush()
 
-    branch = Branch(name=body.branch_name.strip() or "Главный филиал", timezone=body.timezone, is_active=True)
+    branch = Branch(name=branch_name, timezone=body.timezone, is_active=True)
     db.add(branch)
     await db.flush()
 

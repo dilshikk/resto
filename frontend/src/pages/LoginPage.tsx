@@ -3,6 +3,10 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/auth-context.tsx";
 import { toast } from "sonner";
 
+// Application display name — change here to rebrand.
+const APP_NAME = "MADO Checklist";
+const APP_TAGLINE = "Контроль выполнения операционных чек-листов персоналом ресторанов MADO";
+
 /**
  * Two-step login page.
  *
@@ -21,11 +25,11 @@ export default function LoginPage() {
   const { isAuthenticated, login, verify2fa } = useAuth();
   const navigate = useNavigate();
 
-  // ── step 1 state ────────────────────────────────────────────────────────────
+  // ── step 1 state ──────────────────────────────────────────────────────────────────────────────
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  // ── step 2 state ────────────────────────────────────────────────────────────
+  // ── step 2 state ──────────────────────────────────────────────────────────────────────────────
   // preAuthToken is set when the server asks for 2FA; null means step 1.
   const [preAuthToken, setPreAuthToken] = useState<string | null>(null);
   const [totpCode, setTotpCode] = useState("");
@@ -35,7 +39,7 @@ export default function LoginPage() {
 
   if (isAuthenticated) return <Navigate to="/app" replace />;
 
-  // ── handlers ────────────────────────────────────────────────────────────────
+  // ── handlers ──────────────────────────────────────────────────────────────────────────────
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,7 +101,7 @@ export default function LoginPage() {
     }
   };
 
-  // ── render ───────────────────────────────────────────────────────────────────
+  // ── render ───────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-8 bg-background px-4">
@@ -106,10 +110,8 @@ export default function LoginPage() {
         <div className="flex size-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg text-3xl">
           🍽️
         </div>
-        <h1 className="text-3xl font-bold tracking-tight">MADO Checklist</h1>
-        <p className="max-w-sm text-muted-foreground">
-          Контроль выполнения операционных чек-листов персоналом ресторанов MADO
-        </p>
+        <h1 className="text-3xl font-bold tracking-tight">{APP_NAME}</h1>
+        <p className="max-w-sm text-muted-foreground">{APP_TAGLINE}</p>
       </div>
 
       <div className="w-full max-w-sm rounded-2xl border bg-card p-6 shadow-sm space-y-4">
@@ -127,7 +129,7 @@ export default function LoginPage() {
                   type="email"
                   autoComplete="email"
                   className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-                  placeholder="example@mado.uz"
+                  placeholder="email@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required

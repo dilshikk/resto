@@ -95,7 +95,7 @@ async def revoke_token(payload: dict[str, Any], db: AsyncSession) -> None:
 def decode_token(token: str, expected_type: str) -> dict[str, Any]:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Не удалось подтвердить учётные данные",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -134,7 +134,7 @@ async def get_current_web_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Не удалось подтвердить учётные данные",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
@@ -146,7 +146,7 @@ async def get_current_user(
 ) -> Employee:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Не удалось подтвердить учётные данные",
         headers={"WWW-Authenticate": "Bearer"},
     )
     payload = decode_token(token, "access")
@@ -169,7 +169,7 @@ async def get_current_user(
     )
     account = acc_result.scalar_one_or_none()
     if not account:
-        raise HTTPException(status_code=403, detail="No employee profile linked")
+        raise HTTPException(status_code=403, detail="Профиль сотрудника не привязан")
 
     emp_result = await db.execute(
         select(Employee).where(Employee.id == account.employee_id)
@@ -185,7 +185,7 @@ async def require_manager(employee: Employee = Depends(get_current_user), db: As
     role_result = await db.execute(select(Role).where(Role.id == employee.role_id))
     role = role_result.scalar_one_or_none()
     if not role or role.permission_level < 1:
-        raise HTTPException(status_code=403, detail="Manager access required")
+        raise HTTPException(status_code=403, detail="Требуются права менеджера")
     return employee
 
 
@@ -193,7 +193,7 @@ async def require_supervisor(employee: Employee = Depends(get_current_user), db:
     role_result = await db.execute(select(Role).where(Role.id == employee.role_id))
     role = role_result.scalar_one_or_none()
     if not role or role.permission_level < 2:
-        raise HTTPException(status_code=403, detail="Supervisor access required")
+        raise HTTPException(status_code=403, detail="Требуются права управляющего")
     return employee
 
 
@@ -205,7 +205,7 @@ async def verify_bot_secret(x_bot_secret: str = Header(...)) -> None:
     identify which employee is acting, since the bot has no per-user JWT.
     """
     if x_bot_secret != settings.BOT_INTERNAL_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid bot secret")
+        raise HTTPException(status_code=401, detail="Неверный внутренний секрет")
 
 
 async def get_employee_by_telegram_id(telegram_id: int, db: AsyncSession) -> Employee:

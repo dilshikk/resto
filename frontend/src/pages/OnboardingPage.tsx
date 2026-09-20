@@ -10,6 +10,54 @@ import {
 } from "@/api/employees.ts";
 import { useAuth } from "@/context/auth-context.tsx";
 
+// Application display name — keep in sync with LoginPage.tsx.
+const APP_NAME = "MADO Checklist";
+
+// Comprehensive list of IANA timezones with UTC offset labels.
+// Groups: Americas → Europe → Africa → Asia/CIS → East Asia → Pacific.
+const TIMEZONES: { value: string; label: string }[] = [
+  { value: "Pacific/Honolulu",      label: "Pacific/Honolulu (UTC−10)" },
+  { value: "America/Anchorage",     label: "America/Anchorage (UTC−9)" },
+  { value: "America/Los_Angeles",   label: "America/Los_Angeles (UTC−8)" },
+  { value: "America/Denver",        label: "America/Denver (UTC−7)" },
+  { value: "America/Chicago",       label: "America/Chicago (UTC−6)" },
+  { value: "America/New_York",      label: "America/New_York (UTC−5)" },
+  { value: "America/Halifax",       label: "America/Halifax (UTC−4)" },
+  { value: "America/Sao_Paulo",     label: "America/Sao_Paulo (UTC−3)" },
+  { value: "Atlantic/Azores",       label: "Atlantic/Azores (UTC−1)" },
+  { value: "Europe/London",         label: "Europe/London (UTC+0)" },
+  { value: "Europe/Paris",          label: "Europe/Paris (UTC+1)" },
+  { value: "Europe/Helsinki",       label: "Europe/Helsinki (UTC+2)" },
+  { value: "Africa/Cairo",          label: "Africa/Cairo (UTC+2)" },
+  { value: "Europe/Moscow",         label: "Europe/Moscow (UTC+3)" },
+  { value: "Africa/Nairobi",        label: "Africa/Nairobi (UTC+3)" },
+  { value: "Asia/Tbilisi",          label: "Asia/Tbilisi (UTC+4)" },
+  { value: "Asia/Yerevan",          label: "Asia/Yerevan (UTC+4)" },
+  { value: "Asia/Baku",             label: "Asia/Baku (UTC+4)" },
+  { value: "Asia/Dubai",            label: "Asia/Dubai (UTC+4)" },
+  { value: "Europe/Astrakhan",      label: "Europe/Astrakhan (UTC+4)" },
+  { value: "Asia/Ashgabat",         label: "Asia/Ashgabat (UTC+5)" },
+  { value: "Asia/Dushanbe",         label: "Asia/Dushanbe (UTC+5)" },
+  { value: "Asia/Tashkent",         label: "Asia/Tashkent (UTC+5)" },
+  { value: "Asia/Samarkand",        label: "Asia/Samarkand (UTC+5)" },
+  { value: "Asia/Karachi",          label: "Asia/Karachi (UTC+5)" },
+  { value: "Asia/Kolkata",          label: "Asia/Kolkata (UTC+5:30)" },
+  { value: "Asia/Bishkek",          label: "Asia/Bishkek (UTC+6)" },
+  { value: "Asia/Almaty",           label: "Asia/Almaty (UTC+6)" },
+  { value: "Asia/Dhaka",            label: "Asia/Dhaka (UTC+6)" },
+  { value: "Asia/Bangkok",          label: "Asia/Bangkok (UTC+7)" },
+  { value: "Asia/Novosibirsk",      label: "Asia/Novosibirsk (UTC+7)" },
+  { value: "Asia/Shanghai",         label: "Asia/Shanghai (UTC+8)" },
+  { value: "Asia/Singapore",        label: "Asia/Singapore (UTC+8)" },
+  { value: "Asia/Irkutsk",          label: "Asia/Irkutsk (UTC+8)" },
+  { value: "Asia/Tokyo",            label: "Asia/Tokyo (UTC+9)" },
+  { value: "Asia/Seoul",            label: "Asia/Seoul (UTC+9)" },
+  { value: "Asia/Yakutsk",          label: "Asia/Yakutsk (UTC+9)" },
+  { value: "Australia/Sydney",      label: "Australia/Sydney (UTC+10/11)" },
+  { value: "Asia/Vladivostok",      label: "Asia/Vladivostok (UTC+10)" },
+  { value: "Pacific/Auckland",      label: "Pacific/Auckland (UTC+12/13)" },
+];
+
 /**
  * Shown when a logged-in web user has no linked employee profile yet
  * (AppLayout redirects here when GET /employees/me comes back empty).
@@ -37,8 +85,6 @@ export default function OnboardingPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const afterSuccess = async () => {
-    // Force AppLayout's profile query to refetch instead of using its cache,
-    // so it sees the freshly-created/linked employee and stops redirecting here.
     await queryClient.invalidateQueries({ queryKey: ["my-profile"] });
     await queryClient.refetchQueries({ queryKey: ["my-profile"] });
     navigate("/app", { replace: true });
@@ -88,7 +134,7 @@ export default function OnboardingPage() {
         return;
       }
     } catch {
-      // still not linked — expected when nothing changed yet
+      // still not linked — expected
     } finally {
       setSubmitting(false);
     }
@@ -109,10 +155,8 @@ export default function OnboardingPage() {
         <div className="flex size-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg text-3xl">
           🍽️
         </div>
-        <h1 className="text-3xl font-bold tracking-tight">MADO Checklist</h1>
-        <p className="max-w-sm text-muted-foreground">
-          Настройка доступа к системе
-        </p>
+        <h1 className="text-3xl font-bold tracking-tight">{APP_NAME}</h1>
+        <p className="max-w-sm text-muted-foreground">Настройка доступа к системе</p>
       </div>
 
       <div className="w-full max-w-sm rounded-2xl border bg-card p-6 shadow-sm space-y-4">
@@ -186,8 +230,11 @@ export default function OnboardingPage() {
                   value={timezone}
                   onChange={(e) => setTimezone(e.target.value)}
                 >
-                  <option value="Asia/Tashkent">Asia/Tashkent (Ташкент)</option>
-                  <option value="Asia/Samarkand">Asia/Samarkand (Самарканд)</option>
+                  {TIMEZONES.map((tz) => (
+                    <option key={tz.value} value={tz.value}>
+                      {tz.label}
+                    </option>
+                  ))}
                 </select>
               </div>
               <button
