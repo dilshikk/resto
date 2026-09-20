@@ -23,6 +23,7 @@ from app.models.role import Role
 from app.routers.audit_logs import log_action
 from app.routers.checklists import (
     UPLOAD_DIR as CHECKLIST_UPLOAD_DIR,
+    _assert_completion_requirements,
     _assert_previous_required_done,
     _build_items_batch,
     _build_out,
@@ -138,6 +139,8 @@ async def get_my_current_item(
         current_position=position,
         standard_code=item.standard_code,
         standard_title=None,
+        requires_photo=item.requires_photo,
+        requires_comment=item.requires_comment,
     )
 
 
@@ -192,8 +195,13 @@ async def toggle_item(
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
-    item.is_completed = not item.is_completed
-    if item.is_completed:
+    # Only enforce confirmation requirements when marking as completed (not un-completing).
+    completing = not item.is_completed
+    if completing:
+        await _assert_completion_requirements(item, body.note, db)
+
+    item.is_completed = completing
+    if completing:
         item.is_skipped = False
         item.completed_by_employee_id = emp.id
         item.completed_at = datetime.now(timezone.utc)
