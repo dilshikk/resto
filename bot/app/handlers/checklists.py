@@ -16,9 +16,10 @@ from app.states import ItemStates, PhotoStates
 
 router = Router(name="checklists")
 
-# Telegram's own hard limit is 20 MB, but the backend rejects anything over 8 MB.
-# We check here so we never download a file we know the backend will refuse.
-MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8 MB
+# Telegram's own hard limit for bots is 20 MB per file, but compressed photos
+# are always re-encoded by Telegram and stay well under that.  We allow 25 MB
+# here to be future-proof and to match the backend's own upload limit.
+MAX_PHOTO_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 def _item_text(item: dict, lang: str) -> str:

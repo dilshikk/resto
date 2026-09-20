@@ -86,7 +86,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Фото прикреплено к пункту \u00ab{item}\u00bb ✅",
         "photo_cancelled": "Фото отменено. Отправьте /today, чтобы продолжить работу.",
         "detect_checklist_error": "Не удалось определить чек-лист: {detail}",
-        "photo_too_large": "Фото слишком большое ({size_mb} МБ). Максимальный размер: 8 МБ.",
+        "photo_too_large": "Фото слишком большое ({size_mb} МБ). Максимальный размер: 25 МБ.",
 
         # ── Bot command descriptions ──
         "cmd_start_desc": "Начать / привязать аккаунт",
@@ -151,7 +151,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Rasm \u00ab{item}\u00bb bandiga biriktirildi ✅",
         "photo_cancelled": "Rasm bekor qilindi. Davom etish uchun /today yuboring.",
         "detect_checklist_error": "Chek-ro'yxatni aniqlab bo'lmadi: {detail}",
-        "photo_too_large": "Rasm juda katta ({size_mb}\u00a0MB). Maksimal hajm: 8\u00a0MB.",
+        "photo_too_large": "Rasm juda katta ({size_mb}\u00a0MB). Maksimal hajm: 25\u00a0MB.",
         "cmd_start_desc": "Boshlash / hisobni bog'lash",
         "cmd_today_desc": "Bugungi chek-ro'yxatlar",
     },
@@ -214,7 +214,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Photo attached to \u00ab{item}\u00bb ✅",
         "photo_cancelled": "Photo cancelled. Send /today to continue.",
         "detect_checklist_error": "Could not detect checklist: {detail}",
-        "photo_too_large": "Photo is too large ({size_mb}\u00a0MB). Maximum size: 8\u00a0MB.",
+        "photo_too_large": "Photo is too large ({size_mb}\u00a0MB). Maximum size: 25\u00a0MB.",
         "cmd_start_desc": "Start / link account",
         "cmd_today_desc": "Today's checklists",
     },
@@ -222,11 +222,6 @@ STRINGS: dict[str, dict[str, str]] = {
 
 
 def get_lang(language_code: str | None) -> str:
-    """
-    Map a Telegram language_code (e.g. "uz", "uz-UZ", "en", "en-US") to one
-    of the supported bot languages.  Falls back to DEFAULT_LANG for anything
-    not explicitly mapped.
-    """
     if not language_code:
         return DEFAULT_LANG
     lc = language_code.lower()
@@ -238,11 +233,6 @@ def get_lang(language_code: str | None) -> str:
 
 
 def t(key: str, lang: str, **kwargs: object) -> str:
-    """
-    Return the translated string for *key* in *lang*, falling back to
-    DEFAULT_LANG if the key is missing in the requested language.
-    Format placeholders are filled with **kwargs.
-    """
     lang_data = STRINGS.get(lang, {})
     template = lang_data.get(key) or STRINGS[DEFAULT_LANG].get(key, key)
     return template.format(**kwargs) if kwargs else template
