@@ -6,13 +6,26 @@ import {
   getChecklist,
   createChecklist,
   toggleChecklistItem,
+  skipChecklistItem,
   completeChecklist,
   listTemplates,
 } from "@/api/checklists.ts";
 import type { Checklist, ChecklistCreate, DeadlineStatus } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
 import { getMyProfile } from "@/api/employees.ts";
-import { CheckSquare, Plus, Clock, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { listAuditLogs } from "@/api/audit-logs.ts";
+import type { AuditLog } from "@/api/audit-logs.ts";
+import {
+  CheckSquare,
+  Plus,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  History,
+  SkipForward,
+  ClipboardList,
+} from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
 const SHIFTS = [
@@ -175,6 +188,59 @@ function ChecklistCard({ cl, onClick }: { cl: Checklist; onClick: () => void }) 
   );
 }
 
+// ── Audit Log helpers ─────────────────────────────────────────────────────
+
+const ACTION_LABELS: Record<string, { label: string; color: string }> = {
+  "checklist.created": { label: "Чек-лист создан", color: "text-blue-600 dark:text-blue-400" },
+  "checklist.completed": { label: "Чек-лист завершён", color: "text-green-600 dark:text-green-400" },
+  "task.completed": { label: "Пункт выполнен", color: "text-green-600 dark:text-green-400" },
+  "task.reopened": { label: "Пункт переоткрыт", color: "text-amber-600 dark:text-amber-400" },
+  "task.skipped": { label: "Пункт пропущен", color: "text-zinc-500 dark:text-zinc-400" },
+  "photo.uploaded": { label: "Фото добавлено", color: "text-blue-600 dark:text-blue-400" },
+  "photo.deleted": { label: "Фото удалено", color: "text-red-600 dark:text-red-400" },
+};
+
+function AuditLogTimeline({ logs }: { logs: AuditLog[] }) {
+  if (logs.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
+        <History className="size-8 text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">История изменений пуста</p>
+      </div>
+    );
+  }
+
+  return (
+    <ol className="relative border-l border-border ml-3 space-y-4 py-4 pr-2">
+      {logs.map((log) => {
+        const cfg = ACTION_LABELS[log.action] ?? { label: log.action, color: "text-foreground" };
+        const timeStr = new Date(log.created_at).toLocaleString("ru-RU", {
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const itemTitle = log.metadata?.title as string | undefined;
+        return (
+          <li key={log.id} className="ml-4">
+            <div className="absolute -left-1.5 mt-1.5 h-3 w-3 rounded-full border border-border bg-background" />
+            <div className="space-y-0.5">
+              <p className={cn("text-sm font-medium", cfg.color)}>{cfg.label}</p>
+              {itemTitle && (
+                <p className="text-xs text-muted-foreground truncate">«{itemTitle}»</p>
+              )}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {log.actor_name && <span>{log.actor_name}</span>}
+                <span>{timeStr}</span>
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 // ── Checklist Detail Modal ────────────────────────────────────────────────
 
 function DeadlineDetailRow({ cl }: { cl: Checklist }) {
@@ -210,6 +276,8 @@ function DeadlineDetailRow({ cl }: { cl: Checklist }) {
   );
 }
 
+type ModalTab = "items" | "history";
+
 function ChecklistDetailModal({
   checklistId,
   isManager,
@@ -220,9 +288,18 @@ function ChecklistDetailModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const [activeTab, setActiveTab] = useState<ModalTab>("items");
+  const [skipNote, setSkipNote] = useState<Record<number, string>>({});
+
   const { data: detail, isLoading } = useQuery({
     queryKey: ["checklist", checklistId],
     queryFn: () => getChecklist(checklistId),
+  });
+
+  const { data: auditLogs, isLoading: logsLoading } = useQuery({
+    queryKey: ["audit-logs", "checklist", checklistId],
+    queryFn: () => listAuditLogs({ entity_type: "checklist", entity_id: checklistId, limit: 50 }),
+    enabled: activeTab === "history",
   });
 
   const toggleMut = useMutation({
@@ -230,8 +307,26 @@ function ChecklistDetailModal({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["checklist", checklistId] });
       qc.invalidateQueries({ queryKey: ["checklists"] });
+      qc.invalidateQueries({ queryKey: ["audit-logs", "checklist", checklistId] });
     },
     onError: () => toast.error("Не удалось обновить пункт"),
+  });
+
+  const skipMut = useMutation({
+    mutationFn: ({ itemId, note }: { itemId: number; note?: string }) =>
+      skipChecklistItem(checklistId, itemId, note),
+    onSuccess: (_data, variables) => {
+      toast.success("Пункт пропущен");
+      setSkipNote((prev) => {
+        const next = { ...prev };
+        delete next[variables.itemId];
+        return next;
+      });
+      qc.invalidateQueries({ queryKey: ["checklist", checklistId] });
+      qc.invalidateQueries({ queryKey: ["checklists"] });
+      qc.invalidateQueries({ queryKey: ["audit-logs", "checklist", checklistId] });
+    },
+    onError: (err: Error) => toast.error(err.message ?? "Не удалось пропустить пункт"),
   });
 
   const completeMut = useMutation({
@@ -274,84 +369,145 @@ function ChecklistDetailModal({
         {/* Deadline row */}
         {detail && <DeadlineDetailRow cl={detail} />}
 
-        {/* Progress bar */}
-        {detail && (
+        {/* Tabs */}
+        <div className="shrink-0 flex border-b">
+          <button
+            type="button"
+            onClick={() => setActiveTab("items")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors",
+              activeTab === "items"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <ClipboardList className="size-3.5" />
+            Пункты
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("history")}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors",
+              activeTab === "history"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <History className="size-3.5" />
+            История
+          </button>
+        </div>
+
+        {/* Progress bar (items tab only) */}
+        {activeTab === "items" && detail && (
           <div className="shrink-0 border-b bg-muted/30 px-5 py-3">
             <ProgressBar total={detail.total_items} done={detail.completed_items} />
           </div>
         )}
 
-        {/* Items */}
-        {isLoading ? (
-          <div className="flex flex-1 items-center justify-center p-8">
-            <div className="h-8 w-32 animate-pulse rounded-lg bg-muted" />
-          </div>
-        ) : detail && detail.items.length > 0 ? (
-          <div className="flex-1 divide-y overflow-y-auto">
-            {detail.items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  if (!isOpen || toggleMut.isPending) return;
-                  toggleMut.mutate(item.id);
-                }}
-                disabled={!isOpen || toggleMut.isPending}
-                className={cn(
-                  "w-full px-5 py-3.5 text-left transition-colors flex items-start gap-3",
-                  isOpen && "cursor-pointer hover:bg-muted/40",
-                  !isOpen && "cursor-default",
-                )}
-              >
-                {/* Circle checkbox */}
-                <div
-                  className={cn(
-                    "mt-0.5 shrink-0 size-5 rounded-full border-2 flex items-center justify-center transition-colors",
-                    item.is_completed
-                      ? "border-green-500 bg-green-500"
-                      : "border-muted-foreground/30",
-                  )}
-                >
-                  {item.is_completed && (
-                    <svg
-                      className="size-3 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={3}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <p
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === "items" ? (
+            isLoading ? (
+              <div className="flex flex-1 items-center justify-center p-8">
+                <div className="h-8 w-32 animate-pulse rounded-lg bg-muted" />
+              </div>
+            ) : detail?.items && detail.items.length > 0 ? (
+              <div className="divide-y">
+                {detail.items.map((item) => (
+                  <div
+                    key={item.id}
                     className={cn(
-                      "text-sm font-medium",
-                      item.is_completed && "text-muted-foreground line-through",
+                      "px-5 py-3",
+                      item.is_skipped && "opacity-50",
                     )}
                   >
-                    {item.title}
-                    {item.is_required && !item.is_completed && (
-                      <span className="ml-1.5 text-xs text-destructive">*</span>
-                    )}
-                  </p>
-                  {item.is_completed && item.completed_by_name && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{item.completed_by_name}</p>
-                  )}
+                    <div className="flex items-start gap-3">
+                      {/* Toggle button */}
+                      <button
+                        type="button"
+                        disabled={
+                          !isOpen ||
+                          toggleMut.isPending ||
+                          item.is_skipped
+                        }
+                        onClick={() => toggleMut.mutate(item.id)}
+                        className={cn(
+                          "mt-0.5 shrink-0 size-5 rounded border-2 transition-colors",
+                          item.is_completed
+                            ? "border-green-500 bg-green-500 text-white"
+                            : "border-border hover:border-primary",
+                          (!isOpen || item.is_skipped) && "cursor-not-allowed opacity-50",
+                        )}
+                      >
+                        {item.is_completed && (
+                          <svg viewBox="0 0 12 12" className="size-full p-0.5" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M2 6l3 3 5-5" />
+                          </svg>
+                        )}
+                      </button>
+
+                      <div className="flex-1 min-w-0">
+                        <p
+                          className={cn(
+                            "text-sm font-medium",
+                            (item.is_completed || item.is_skipped) && "text-muted-foreground line-through",
+                          )}
+                        >
+                          {item.title}
+                          {item.is_required && !item.is_completed && !item.is_skipped && (
+                            <span className="ml-1.5 text-xs text-destructive">*</span>
+                          )}
+                          {item.is_skipped && (
+                            <span className="ml-1.5 text-xs text-muted-foreground">(пропущен)</span>
+                          )}
+                        </p>
+                        {item.is_completed && item.completed_by_name && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">{item.completed_by_name}</p>
+                        )}
+                        {item.note && !item.is_completed && (
+                          <p className="mt-0.5 text-xs text-muted-foreground italic">{item.note}</p>
+                        )}
+                      </div>
+
+                      {/* Skip button for optional items */}
+                      {isOpen && !item.is_required && !item.is_completed && !item.is_skipped && (
+                        <button
+                          type="button"
+                          title="Пропустить пункт"
+                          onClick={() => skipMut.mutate({ itemId: item.id, note: skipNote[item.id] })}
+                          disabled={skipMut.isPending}
+                          className="shrink-0 mt-0.5 text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                        >
+                          <SkipForward className="size-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center p-8 text-center">
+                <p className="text-sm text-muted-foreground">Нет пунктов в этом чек-листе</p>
+              </div>
+            )
+          ) : (
+            // History tab
+            <div className="px-4">
+              {logsLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <div className="h-6 w-32 animate-pulse rounded bg-muted" />
                 </div>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-1 items-center justify-center p-8 text-center">
-            <p className="text-sm text-muted-foreground">Нет пунктов в этом чек-листе</p>
-          </div>
-        )}
+              ) : (
+                <AuditLogTimeline logs={auditLogs ?? []} />
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Complete button */}
-        {isOpen && isManager && allRequiredDone && (
+        {isOpen && isManager && allRequiredDone && activeTab === "items" && (
           <div className="shrink-0 border-t p-4">
             <button
               type="button"
