@@ -19,19 +19,28 @@ class BotEmployeeOut(BaseModel):
     preferred_language: str = "ru"
 
 
+class BotLinkResponse(BotEmployeeOut):
+    """Returned by POST /bot/link.
+
+    The bot MUST persist `bot_session_token` for this telegram_id and include
+    it as `X-Bot-Employee-Token` on every subsequent per-employee request.
+    The token is shown here exactly once — the backend only stores its hash.
+    """
+    bot_session_token: str
+
+
 class BotToggleRequest(BaseModel):
-    telegram_id: int
     note: str | None = None
 
 
 class BotSkipRequest(BaseModel):
-    telegram_id: int
     note: str | None = None
 
 
 # Re-exported for convenience so bot router callers only need this module
 __all__ = [
     "BotLinkRequest",
+    "BotLinkResponse",
     "BotEmployeeOut",
     "BotToggleRequest",
     "BotSkipRequest",

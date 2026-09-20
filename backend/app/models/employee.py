@@ -29,6 +29,15 @@ class Employee(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # ── Per-employee bot credential ───────────────────────────────────────────
+    # SHA-256 hex digest of the per-employee bot session token issued on
+    # /bot/link.  The bot stores the plaintext; we only keep the hash so that
+    # a database dump does NOT expose usable credentials.
+    # NULL means the employee has never linked via the bot (or was reset).
+    bot_session_token_hash: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
+
 
 class EmployeeAccount(Base):
     """\u0421\u0432\u044f\u0437\u044c employee <-> user (\u0432\u0435\u0431-\u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u0430)."""

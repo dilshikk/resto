@@ -117,24 +117,18 @@ async def _insert_employee_with_unique_invite(
     db: AsyncSession,
 ) -> None:
     """
-    Insert *emp* into the session and commit, retrying with a fresh invite
+    Insert *emp* into the session and flush, retrying with a fresh invite
     code on the rare event of a UNIQUE constraint violation on invite_code.
-
-    The DB-level UNIQUE constraint on employees.invite_code is the last line
-    of defence against concurrent inserts that pass the application-level
-    SELECT check simultaneously.  Retrying here keeps the caller simple and
-    makes the uniqueness guarantee ironclad even under high concurrency.
     """
     for attempt in range(_MAX_INVITE_ATTEMPTS):
         try:
             db.add(emp)
-            await db.flush()  # hit the constraint without a full commit
-            return  # success — caller is responsible for commit
+            await db.flush()
+            return
         except IntegrityError as exc:
             await db.rollback()
             err = str(exc.orig).lower()
             if "uq_employees_invite_code" not in err and "invite_code" not in err:
-                # Different constraint — re-raise immediately.
                 raise
             emp.invite_code = _gen_invite()
             logger.warning(
@@ -344,11 +338,13 @@ async def regenerate_invite(
 
     await _assert_branch_access_to_employee(emp, current, db)
 
-    # Retry loop guards against the (very rare) collision on regeneration.
     for attempt in range(_MAX_INVITE_ATTEMPTS):
         new_code = _gen_invite()
         emp.invite_code = new_code
+        # Revoke the Telegram link and bot session token so the employee
+        # must re-link with the new invite code.
         emp.telegram_id = None
+        emp.bot_session_token_hash = None
         try:
             await db.flush()
             break
