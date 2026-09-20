@@ -48,7 +48,26 @@ async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSess
         )
 
 
-# ── batch-aware builder ────────────────────────────────────────────────────
+async def _assert_branch_access_to_employee(emp: Employee, current: Employee, db: AsyncSession) -> None:
+    """
+    Raise 403 unless the acting manager has access to at least one of the
+    target employee's branches.  Supervisors/directors (permission_level >= 2)
+    are exempt and can act on any employee.
+
+    This is the canonical branch-scoping guard used by update_employee,
+    regenerate_invite, and unlink_employee_account — keep them in sync.
+    """
+    role = await _get_own_role(current, db)
+    can_all = bool(role and role.permission_level >= 2)
+    if can_all:
+        return
+    own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
+    existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
+    if not (existing_branches & own_allowed_branches):
+        raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
+
+
+# ── batch-aware builder ───────────────────────────────────────────────────────────────
 
 def _employee_out_from_cache(
     emp: Employee,
@@ -90,7 +109,7 @@ async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
     return _employee_out_from_cache(emp, roles, branches, claimed)
 
 
-# ── endpoints ─────────────────────────────────────────────────────────────────
+# ── endpoints ─────────────────────────────────────────────────────────────────────
 
 @router.get("/any")
 async def has_any_employees(db: AsyncSession = Depends(get_db)):
@@ -291,13 +310,7 @@ async def regenerate_invite(
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
-    role = await _get_own_role(current, db)
-    can_all = bool(role and role.permission_level >= 2)
-    if not can_all:
-        own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
-        existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
-        if not (existing_branches & own_allowed_branches):
-            raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
+    await _assert_branch_access_to_employee(emp, current, db)
 
     new_code = _gen_invite()
     emp.invite_code = new_code
@@ -357,7 +370,16 @@ async def unlink_employee_account(
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
-    await _assert_can_assign_role(emp.role_id, current, db)
+    # Guard: check that the acting manager has access to the target employee's
+    # branch, consistent with update_employee and regenerate_invite.
+    # The previous check (_assert_can_assign_role) was wrong: it tested whether
+    # the manager could assign the employee's current role, not whether the
+    # employee belongs to a branch the manager is responsible for.  A manager
+    # could therefore be blocked from unlinking an account for a lower-level
+    # employee in their own branch (if the employee had a role the manager
+    # couldn't assign), or allowed to unlink accounts for employees in other
+    # branches (if those employees happened to have a low-level role).
+    await _assert_branch_access_to_employee(emp, current, db)
 
     account = (await db.execute(
         select(EmployeeAccount).where(EmployeeAccount.employee_id == employee_id)
@@ -367,7 +389,7 @@ async def unlink_employee_account(
 
     await db.delete(account)
     await log_action(
-        db, actor_id=current.id, action="employee.account_unlinked", entity_type="employee", entity_id=employee_id,
+    db, actor_id=current.id, action="employee.account_unlinked", entity_type="employee", entity_id=employee_id,
         metadata={"unlinked_user_id": account.user_id},
     )
     await db.commit()
