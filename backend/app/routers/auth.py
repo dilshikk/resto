@@ -194,14 +194,21 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
 async def logout(
     body: LogoutRequest | None = None,
     token: str = Depends(oauth2_scheme),
-    _: Employee = Depends(get_current_user),
+    # Use get_current_web_user (not get_current_user) so that users who have
+    # not yet linked an employee profile can still log out.  get_current_user
+    # resolves an EmployeeAccount and raises 403 when none exists, which would
+    # leave the access token alive with no way for the user to revoke it.
+    current_user: User = Depends(get_current_web_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Actually end the session: revoke the access token used to call this
-    endpoint (so it can't be replayed for the rest of its lifetime) and, if
-    the client sends its refresh token, revoke that too (so it can't be used
-    to mint fresh access tokens after logout).
+    End the session: revoke the access token used to call this endpoint (so
+    it cannot be replayed for the rest of its lifetime) and, if the client
+    sends its refresh token, revoke that too (so it cannot be used to mint
+    fresh access tokens after logout).
+
+    Accessible to every authenticated web user, including those who have not
+    yet completed the onboarding flow and have no linked employee profile.
     """
     access_payload = decode_token(token, "access")
     await revoke_token(access_payload, db)
