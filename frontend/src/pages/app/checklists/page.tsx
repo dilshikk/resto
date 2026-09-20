@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -9,6 +9,7 @@ import {
   skipChecklistItem,
   completeChecklist,
   listTemplates,
+  getPhotoSignedUrl,
 } from "@/api/checklists.ts";
 import type { Checklist, ChecklistCreate, DeadlineStatus } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
@@ -25,6 +26,7 @@ import {
   History,
   SkipForward,
   ClipboardList,
+  ImageOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
@@ -238,6 +240,86 @@ function AuditLogTimeline({ logs }: { logs: AuditLog[] }) {
         );
       })}
     </ol>
+  );
+}
+
+// ── Signed photo image ────────────────────────────────────────────────────
+//
+// Browser <img src> cannot send Authorization headers.  Instead:
+//   1. On mount, call GET /photos/{filename}/signed-url (Bearer via axios)
+//      to obtain a short-lived (?token=…) URL.
+//   2. Set that URL as the <img src>.
+//   3. Cache the result in a module-level Map so sibling items that share
+//      the same file don't re-fetch. Entries are evicted when they expire
+//      (checked lazily on next access).
+
+type SignedUrlCacheEntry = { url: string; expiresAt: number };
+const signedUrlCache = new Map<string, SignedUrlCacheEntry>();
+
+function SignedPhoto({
+  rawUrl,
+  alt,
+  className,
+}: {
+  rawUrl: string;
+  alt: string;
+  className?: string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  // Stable ref to the raw URL so the effect dep doesn't change on re-renders.
+  const rawUrlRef = useRef(rawUrl);
+  rawUrlRef.current = rawUrl;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      const cached = signedUrlCache.get(rawUrl);
+      // Use cache if it won't expire within the next 60 s.
+      if (cached && cached.expiresAt - Date.now() / 1000 > 60) {
+        if (!cancelled) setSrc(cached.url);
+        return;
+      }
+
+      try {
+        const signedUrl = await getPhotoSignedUrl(rawUrl);
+        // The backend also returns expires_at but getPhotoSignedUrl only
+        // exposes the URL.  Parse the unix timestamp from the token query
+        // param (?token={expires_unix}.{mac}) so we can cache correctly.
+        const tokenMatch = signedUrl.match(/[?&]token=(\d+)\./);
+        const expiresAt = tokenMatch ? parseInt(tokenMatch[1], 10) : Date.now() / 1000 + 3600;
+        signedUrlCache.set(rawUrl, { url: signedUrl, expiresAt });
+        if (!cancelled) setSrc(signedUrl);
+      } catch {
+        if (!cancelled) setError(true);
+      }
+    };
+
+    load();
+    return () => { cancelled = true; };
+  }, [rawUrl]);
+
+  if (error || (!src && rawUrl === "")) {
+    return (
+      <div className={cn("flex items-center justify-center bg-muted text-muted-foreground rounded", className)}>
+        <ImageOff className="size-5" />
+      </div>
+    );
+  }
+
+  if (!src) {
+    // Loading skeleton
+    return <div className={cn("animate-pulse bg-muted rounded", className)} />;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={cn("object-cover rounded", className)}
+      onError={() => setError(true)}
+    />
   );
 }
 
@@ -469,6 +551,21 @@ function ChecklistDetailModal({
                         {item.note && !item.is_completed && (
                           <p className="mt-0.5 text-xs text-muted-foreground italic">{item.note}</p>
                         )}
+
+                        {/* ── Photo thumbnails ───────────────────────── */}
+                        {item.photos.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {item.photos.map((photo) => (
+                              <SignedPhoto
+                                key={photo.id}
+                                rawUrl={photo.url}
+                                alt={`Фото к пункту «${item.title}»`}
+                                className="size-16 shrink-0"
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {/* ─────────────────────────────────────────────── */}
                       </div>
 
                       {/* Skip button for optional items */}
