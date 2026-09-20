@@ -1,6 +1,6 @@
 import pyotp
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
+from app.rate_limit import limiter, login_attempt_tracker
 from app.schemas.auth import (
     TokenResponse,
     LoginResponse,
@@ -52,18 +53,54 @@ def _verify_totp(secret: str, code: str) -> bool:
 
 
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,  # required by SlowAPI for IP extraction
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.email == form_data.username))
+    """
+    Password-based login with two-layer brute-force protection:
+
+    Layer 1 — per-IP rate limit (SlowAPI): max 10 requests/minute from a
+    single IP address.  Returns HTTP 429 on excess.
+
+    Layer 2 — per-email lockout (LoginAttemptTracker): after 5 consecutive
+    wrong passwords the account is locked for 15 minutes regardless of the
+    source IP.  This stops distributed attacks that rotate IPs to bypass the
+    per-IP limit.  A correct password resets the failure counter.
+    """
+    email = form_data.username.lower().strip()
+
+    # ── Layer 2: check per-email lockout ─────────────────────────────────────
+    if login_attempt_tracker.is_locked(email):
+        secs = login_attempt_tracker.seconds_remaining(email)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Слишком много неудачных попыток входа. "
+                f"Повторите через {secs // 60} мин. {secs % 60} сек."
+            ),
+        )
+
+    # ── Credential check ─────────────────────────────────────────────────────
+    result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
+
     if not user or not verify_password(form_data.password, user.password_hash):
+        # Always record the failure (including unknown email) so an attacker
+        # can't distinguish "email not found" from "wrong password" via lockout
+        # timing.  Unknown emails are tracked under the address they submitted.
+        login_attempt_tracker.record_failure(email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный email или пароль",
         )
 
+    # Correct password — clear the failure counter for this email.
+    login_attempt_tracker.record_success(email)
+
+    # ── 2FA gate ──────────────────────────────────────────────────────────────
     # If 2FA is enabled the client must complete a second step before receiving
     # real tokens.  We issue a short-lived pre-auth token instead so there is
     # nothing useful an attacker can do with stolen credentials alone.
@@ -78,7 +115,9 @@ async def login(
 
 
 @router.post("/2fa/verify", response_model=TokenResponse)
+@limiter.limit("20/minute")
 async def verify_2fa(
+    request: Request,  # required by SlowAPI for IP extraction
     body: TwoFAVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -86,6 +125,9 @@ async def verify_2fa(
     Exchange a pre-auth token + valid TOTP code for a full access/refresh pair.
 
     Called after POST /auth/login returns requires_2fa=True.
+
+    Rate-limited to 20 requests/minute per IP to prevent TOTP brute-forcing
+    (the 6-digit code space is only 1 000 000 values).
     """
     payload = decode_pre_auth_token(body.pre_auth_token)
     user = (await db.execute(select(User).where(User.id == int(payload["sub"])))).scalar_one_or_none()
