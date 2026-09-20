@@ -224,6 +224,8 @@ async def _build_items_batch(
                 photos=item_photos,
                 standard_code=item.standard_code,
                 standard_title=standards.get(item.standard_code) if item.standard_code else None,
+                requires_photo=item.requires_photo,
+                requires_comment=item.requires_comment,
             )
         )
     return result
@@ -265,6 +267,35 @@ async def _assert_previous_required_done(
                     f"Нельзя пропустить шаг: сначала выполните обязательный пункт "
                     f"«{other.title}» (шаг {other.sort_order + 1})"
                 ),
+            )
+
+
+async def _assert_completion_requirements(
+    item: ChecklistItem,
+    note: str | None,
+    db: AsyncSession,
+) -> None:
+    """
+    Validate that all confirmation requirements are satisfied before marking an
+    item as completed.  Raises HTTP 400 with a clear message if not.
+    """
+    if item.requires_comment and not (note and note.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Пункт «{item.title}» требует комментария. Добавьте описание результата.",
+        )
+    if item.requires_photo:
+        photo_count = len(
+            (
+                await db.execute(
+                    select(Photo).where(Photo.checklist_item_id == item.id)
+                )
+            ).scalars().all()
+        )
+        if photo_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Пункт «{item.title}» требует фотоотчёта. Прикрепите хотя бы одно фото.",
             )
 
 
@@ -380,6 +411,7 @@ async def create_checklist(
         status="open",
         started_at=now,
         due_at=due_at,
+        created_by_employee_id=current.id,
     )
     db.add(cl)
     await db.flush()
@@ -393,6 +425,9 @@ async def create_checklist(
                 sort_order=ti.sort_order,
                 is_required=ti.is_required,
                 standard_code=ti.standard_code,
+                # denormalize confirmation requirements at creation time
+                requires_photo=ti.requires_photo,
+                requires_comment=ti.requires_comment,
             )
         )
 
@@ -487,6 +522,8 @@ async def get_current_item(
         current_position=position,
         standard_code=item.standard_code,
         standard_title=standard_title,
+        requires_photo=item.requires_photo,
+        requires_comment=item.requires_comment,
     )
 
 
@@ -519,8 +556,13 @@ async def toggle_item(
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
-    item.is_completed = not item.is_completed
-    if item.is_completed:
+    # Only enforce confirmation requirements when marking as completed (not un-completing).
+    completing = not item.is_completed
+    if completing:
+        await _assert_completion_requirements(item, body.note, db)
+
+    item.is_completed = completing
+    if completing:
         item.is_skipped = False
         item.completed_by_employee_id = current.id
         item.completed_at = datetime.now(timezone.utc)
