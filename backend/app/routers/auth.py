@@ -52,6 +52,12 @@ _REFRESH_COOKIE_PATH = "/api/v1/auth"
 # Stable integer key for the advisory lock that guards first-user creation.
 _FIRST_USER_LOCK_KEY = 0x4D41_444F  # "MADO" in hex
 
+# A bcrypt hash of a dummy password used to equalise response time when the
+# requested email does not exist in the database.  Without this, an attacker
+# could detect non-existent accounts by measuring that failed logins on
+# unknown emails return faster than those on known emails.
+_DUMMY_HASH = hash_password("__hercules_dummy_password__")
+
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
     """
@@ -113,6 +119,17 @@ async def login(
     source IP.  Counters are stored in PostgreSQL so they survive restarts
     and are shared across all replicas.  A correct password resets the counter.
 
+    DoS / account-enumeration hardening
+    ───────────────────────────────────
+    The failure counter is incremented ONLY when the email is found in the
+    database but the password is wrong.  When the email does not exist the
+    counter is NOT touched, so an attacker cannot lock out a real account by
+    submitting wrong passwords for it from the outside.
+
+    To prevent timing-based email enumeration, a dummy bcrypt verification is
+    always performed when the email is not found, making the response time
+    indistinguishable from a real wrong-password attempt.
+
     On success the refresh token is delivered as an httpOnly cookie — it is
     never exposed in the JSON response body.
     """
@@ -133,7 +150,20 @@ async def login(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(form_data.password, user.password_hash):
+    if user is None:
+        # Email not found.  Run a dummy bcrypt check so the response time is
+        # identical to a real wrong-password attempt, preventing timing-based
+        # account enumeration.  Do NOT touch the failure counter: the account
+        # does not exist, so there is nothing to lock and an attacker gains no
+        # ability to block a real user by targeting a non-existent address.
+        verify_password(form_data.password, _DUMMY_HASH)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный email или пароль",
+        )
+
+    if not verify_password(form_data.password, user.password_hash):
+        # Email exists but password is wrong — increment the lockout counter.
         await login_attempt_tracker.record_failure(email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
