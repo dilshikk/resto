@@ -10,6 +10,8 @@ export type ChecklistTemplateItem = {
   sort_order: number;
   is_required: boolean;
   standard_code?: string;
+  requires_photo: boolean;
+  requires_comment: boolean;
 };
 
 export type ChecklistTemplate = {
@@ -63,6 +65,8 @@ export type ChecklistItem = {
   photos: ChecklistItemPhoto[];
   standard_code?: string;
   standard_title?: string;
+  requires_photo: boolean;
+  requires_comment: boolean;
 };
 
 export type Checklist = {
@@ -106,6 +110,8 @@ export type CurrentItem = {
   current_position: number;
   standard_code?: string;
   standard_title?: string;
+  requires_photo: boolean;
+  requires_comment: boolean;
 } | null;
 
 // ── Templates API ─────────────────────────────────────────────────────────
@@ -136,7 +142,15 @@ export async function deactivateTemplate(id: number): Promise<void> {
 
 export async function addTemplateItem(
   templateId: number,
-  data: { title: string; description?: string; sort_order?: number; is_required?: boolean; standard_code?: string },
+  data: {
+    title: string;
+    description?: string;
+    sort_order?: number;
+    is_required?: boolean;
+    standard_code?: string;
+    requires_photo?: boolean;
+    requires_comment?: boolean;
+  },
 ): Promise<ChecklistTemplateItem> {
   const res = await apiClient.post<ChecklistTemplateItem>(`/templates/${templateId}/items`, data);
   return res.data;
@@ -145,7 +159,15 @@ export async function addTemplateItem(
 export async function updateTemplateItem(
   templateId: number,
   itemId: number,
-  data: { title: string; description?: string; sort_order?: number; is_required?: boolean; standard_code?: string },
+  data: {
+    title: string;
+    description?: string;
+    sort_order?: number;
+    is_required?: boolean;
+    standard_code?: string;
+    requires_photo?: boolean;
+    requires_comment?: boolean;
+  },
 ): Promise<ChecklistTemplateItem> {
   const res = await apiClient.patch<ChecklistTemplateItem>(`/templates/${templateId}/items/${itemId}`, data);
   return res.data;
