@@ -24,6 +24,10 @@ services:
       - ./backend/migrations/010_revoked_tokens.sql:/docker-entrypoint-initdb.d/010_revoked_tokens.sql
       - ./backend/migrations/011_checklist_deadlines.sql:/docker-entrypoint-initdb.d/011_checklist_deadlines.sql
       - ./backend/migrations/012_2fa_totp.sql:/docker-entrypoint-initdb.d/012_2fa_totp.sql
+      - ./backend/migrations/013_photo_comment_requirements.sql:/docker-entrypoint-initdb.d/013_photo_comment_requirements.sql
+      - ./backend/migrations/014_checklist_item_requirements.sql:/docker-entrypoint-initdb.d/014_checklist_item_requirements.sql
+      - ./backend/migrations/015_checklist_escalation.sql:/docker-entrypoint-initdb.d/015_checklist_escalation.sql
+      - ./backend/migrations/016_i18n.sql:/docker-entrypoint-initdb.d/016_i18n.sql
     ports:
       - "5433:5432"
     healthcheck:
