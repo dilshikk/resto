@@ -8,6 +8,5 @@ class RoleOut(BaseModel):
     name_ru: str
     name_uz: str | None = None
     name_en: str | None = None
-    name_tr: str | None = None
     category: str
     permission_level: int

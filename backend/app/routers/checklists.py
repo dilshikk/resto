@@ -36,19 +36,6 @@ router = APIRouter(prefix="/checklists", tags=["checklists"])
 UPLOAD_DIR = Path(settings.PHOTOS_DIR)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Photo token helpers ───────────────────────────────────────────────────────
-#
-# Browser <img src="..."> cannot attach an Authorization header, so the
-# traditional Bearer-only photo endpoint renders every image as broken.
-#
-# Instead we issue short-lived HMAC-signed tokens:
-#   token = "{expires_unix}.{hmac_hex}"
-#   HMAC  = HMAC-SHA256(SECRET_KEY, "{filename}:{expires_unix}")
-#
-# The token is appended as ?token=... to the photo URL.  Only the signed-url
-# endpoint (which requires Bearer) can produce valid tokens, so unauthenticated
-# clients still cannot access photos.
-
 _PHOTO_TOKEN_TTL_SECONDS = 3600  # 1 hour
 
 
@@ -61,12 +48,6 @@ def _make_photo_token(filename: str) -> tuple[str, int]:
 
 
 def _verify_photo_token(filename: str, token: str) -> None:
-    """
-    Raise HTTP 403 if the token is invalid, tampered, or expired.
-
-    Uses hmac.compare_digest for constant-time comparison to prevent
-    timing-based forgery attempts.
-    """
     try:
         expires_str, mac = token.split(".", 1)
         expires_at = int(expires_str)
@@ -86,18 +67,6 @@ def _verify_photo_token(filename: str, token: str) -> None:
 # ── Deadline helpers ──────────────────────────────────────────────────────────
 
 def _compute_deadline_status(cl: Checklist) -> str | None:
-    """
-    Derive the deadline status from stored timestamps — no DB queries needed.
-
-    Returns one of:
-      "ON_TIME"       – completed before or exactly at due_at
-      "OVERDUE"       – due_at has passed and checklist is not completed,
-                        OR was completed after due_at
-      "NOT_COMPLETED" – due_at passed more than 24 h ago and still not completed
-                        (period is definitively closed)
-      None            – no deadline was set for this checklist (legacy / template
-                        without deadline_offset_minutes)
-    """
     if cl.due_at is None:
         return None
 
@@ -109,7 +78,7 @@ def _compute_deadline_status(cl: Checklist) -> str | None:
         return "OVERDUE"
 
     if now <= cl.due_at:
-        return None  # frontend shows countdown
+        return None
 
     if now > cl.due_at + timedelta(hours=24):
         return "NOT_COMPLETED"
@@ -197,8 +166,7 @@ async def _build_items_batch(
 ) -> list[ChecklistItemOut]:
     """
     Build ChecklistItemOut for all items in a single checklist using
-    5 batch queries (employees, photos, photo-uploaders, standards)
-    instead of 3-4 queries per item.
+    batch queries instead of per-item round-trips.
     """
     if not items:
         return []
@@ -235,7 +203,6 @@ async def _build_items_batch(
             ).scalars().all()
         }
 
-    # group photos by item
     photos_by_item: dict[int, list[Photo]] = {}
     for p in all_photos:
         photos_by_item.setdefault(p.checklist_item_id, []).append(p)
@@ -268,7 +235,11 @@ async def _build_items_batch(
                 id=item.id,
                 checklist_id=item.checklist_id,
                 title=item.title,
+                title_uz=getattr(item, "title_uz", None),
+                title_en=getattr(item, "title_en", None),
                 description=item.description,
+                description_uz=getattr(item, "description_uz", None),
+                description_en=getattr(item, "description_en", None),
                 is_required=item.is_required,
                 sort_order=item.sort_order,
                 is_completed=item.is_completed,
@@ -320,7 +291,7 @@ async def _assert_previous_required_done(
                 status_code=400,
                 detail=(
                     f"Нельзя пропустить шаг: сначала выполните обязательный пункт "
-                    f"«{other.title}» (шаг {other.sort_order + 1})"
+                    f"\u00ab{other.title}\u00bb (шаг {other.sort_order + 1})"
                 ),
             )
 
@@ -330,14 +301,10 @@ async def _assert_completion_requirements(
     note: str | None,
     db: AsyncSession,
 ) -> None:
-    """
-    Validate that all confirmation requirements are satisfied before marking an
-    item as completed.  Raises HTTP 400 with a clear message if not.
-    """
     if item.requires_comment and not (note and note.strip()):
         raise HTTPException(
             status_code=400,
-            detail=f"Пункт «{item.title}» требует комментария. Добавьте описание результата.",
+            detail=f"Пункт \u00ab{item.title}\u00bb требует комментария. Добавьте описание результата.",
         )
     if item.requires_photo:
         photo_count = len(
@@ -350,7 +317,7 @@ async def _assert_completion_requirements(
         if photo_count == 0:
             raise HTTPException(
                 status_code=400,
-                detail=f"Пункт «{item.title}» требует фотоотчёта. Прикрепите хотя бы одно фото.",
+                detail=f"Пункт \u00ab{item.title}\u00bb требует фотоотчёта. Прикрепите хотя бы одно фото.",
             )
 
 
@@ -385,7 +352,6 @@ async def list_checklists(
     if not visible:
         return []
 
-    # ── batch: 1 query per table instead of 2 per checklist ──────────────────
     cl_ids = [cl.id for cl in visible]
     branch_ids = {cl.branch_id for cl in visible}
 
@@ -400,7 +366,6 @@ async def list_checklists(
     items_by_cl: dict[int, list[ChecklistItem]] = {}
     for it in all_items:
         items_by_cl.setdefault(it.checklist_id, []).append(it)
-    # ─────────────────────────────────────────────────────────────────────────
 
     result = []
     for cl in visible:
@@ -476,11 +441,14 @@ async def create_checklist(
             ChecklistItem(
                 checklist_id=cl.id,
                 title=ti.title,
+                title_uz=getattr(ti, "title_uz", None),
+                title_en=getattr(ti, "title_en", None),
                 description=ti.description,
+                description_uz=getattr(ti, "description_uz", None),
+                description_en=getattr(ti, "description_en", None),
                 sort_order=ti.sort_order,
                 is_required=ti.is_required,
                 standard_code=ti.standard_code,
-                # denormalize confirmation requirements at creation time
                 requires_photo=ti.requires_photo,
                 requires_comment=ti.requires_comment,
             )
@@ -515,7 +483,6 @@ async def get_checklist(
     ).scalar_one_or_none()
 
     ordered = await _get_ordered_items(checklist_id, db)
-    # Build all items with a single set of batch queries
     item_outs = await _build_items_batch(ordered, db)
 
     return ChecklistDetail(
@@ -539,7 +506,7 @@ async def get_checklist(
     )
 
 
-# ── Current item (step-by-step bot mode) ─────────────────────────────────────
+# ── Current item (step-by-step web mode) ─────────────────────────────────────
 
 @router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
 async def get_current_item(
@@ -611,7 +578,6 @@ async def toggle_item(
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
-    # Only enforce confirmation requirements when marking as completed (not un-completing).
     completing = not item.is_completed
     if completing:
         await _assert_completion_requirements(item, body.note, db)
@@ -695,34 +661,15 @@ async def skip_item(
 @router.post("/{checklist_id}/complete")
 async def complete_checklist(
     checklist_id: int,
-    # Any authenticated employee can reach this endpoint.
-    # Ownership is enforced inside the handler:
-    #   - staff (permission_level == 0): only their own checklist
-    #   - manager and above (permission_level >= 1): any checklist in their branch
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Mark a checklist as completed.
-
-    Access rules (least-privilege, per spec):
-      • Staff employee — can only complete a checklist they created themselves
-        (created_by_employee_id == current.id).  This covers the normal bot
-        flow where a waiter, runner, etc. finishes their own shift checklist.
-      • Manager / supervisor / director (permission_level >= 1) — can complete
-        any checklist within their allowed branches, e.g. to force-close an
-        overdue checklist.
-
-    In both cases the branch-level guard is applied first, and all required
-    items must already be completed before the checklist can be closed.
-    """
     cl = await _get_checklist_or_404(checklist_id, db)
     await _assert_branch_access(cl, current, db)
 
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
-    # ── ownership check for non-managers ────────────────────────────────────
     role = await _get_role(current, db)
     is_manager = bool(role and role.permission_level >= 1)
     if not is_manager and cl.created_by_employee_id != current.id:
@@ -731,11 +678,10 @@ async def complete_checklist(
             detail="Вы можете завершить только свой чек-лист. Обратитесь к менеджеру.",
         )
 
-    # ── all required items must be done ─────────────────────────────────────
     items = await _get_ordered_items(checklist_id, db)
     pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
     if pending_required:
-        titles = ", ".join(f"«{i.title}»" for i in pending_required[:3])
+        titles = ", ".join(f"\u00ab{i.title}\u00bb" for i in pending_required[:3])
         raise HTTPException(
             status_code=400,
             detail=f"Нельзя завершить: не выполнены обязательные пункты: {titles}",
@@ -817,23 +763,11 @@ async def upload_item_photo(
     )
 
 
-# ── Photo serving: signed-URL token endpoint (must come BEFORE the file endpoint) ─
-
 @router.get("/photos/{filename}/signed-url")
 async def get_photo_signed_url(
     filename: str,
     _: Employee = Depends(get_current_user),
 ) -> dict[str, str]:
-    """
-    Issue a short-lived HMAC-signed URL for a photo file.
-
-    Requires a valid Bearer token (authenticated employee).  Returns a
-    URL that can be used in <img src="..."> without any Authorization header
-    for up to _PHOTO_TOKEN_TTL_SECONDS seconds (currently 1 hour).
-
-    The client should cache the result and re-fetch when the token has
-    expired rather than requesting a new token on every render.
-    """
     path = UPLOAD_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Фото не найдено")
@@ -850,14 +784,6 @@ async def get_item_photo(
     filename: str,
     token: str = Query(..., description="HMAC-signed photo token from /photos/{filename}/signed-url"),
 ) -> FileResponse:
-    """
-    Serve a photo file.  Requires a valid short-lived token obtained from
-    GET /photos/{filename}/signed-url rather than a Bearer token.
-
-    This allows the URL to be used directly in <img src="..."> without
-    requiring JavaScript to inject Authorization headers — which is not
-    possible with native browser img elements.
-    """
     _verify_photo_token(filename, token)
 
     path = UPLOAD_DIR / filename
@@ -866,8 +792,6 @@ async def get_item_photo(
 
     return FileResponse(str(path))
 
-
-# ── Photo delete ──────────────────────────────────────────────────────────────
 
 @router.delete("/{checklist_id}/items/{item_id}/photos/{photo_id}")
 async def delete_item_photo(

@@ -30,11 +30,6 @@ async def _get_or_404(template_id: int, db: AsyncSession) -> ChecklistTemplate:
 
 
 async def _next_sort_order(template_id: int, db: AsyncSession) -> int:
-    """
-    Auto-assign the next sort_order slot when the client doesn't provide one.
-    Without this, every item would default to 0 and step ordering would be
-    undefined/unstable (the bot's "Шаг N/M" numbering would break).
-    """
     result = await db.execute(
         select(func.max(ChecklistTemplateItem.sort_order)).where(
             ChecklistTemplateItem.template_id == template_id
@@ -78,18 +73,6 @@ async def list_templates(
     current: Employee = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return all active templates.
-
-    Previously this made 2 extra DB round-trips per template:
-      • one SELECT to get the branch name
-      • one SELECT to fetch all items just to call len() on them
-
-    Now we do 3 total queries regardless of how many templates exist:
-      1. SELECT active templates
-      2. SELECT branch names for all distinct branch_ids  (IN)
-      3. SELECT COUNT(*) … GROUP BY template_id for item counts  (aggregate)
-    """
     templates = (
         await db.execute(
             select(ChecklistTemplate).where(ChecklistTemplate.is_active == True)  # noqa: E712
@@ -99,7 +82,6 @@ async def list_templates(
     if not templates:
         return []
 
-    # ── batch 1: branch names ─────────────────────────────────────────────────
     branch_ids = {tpl.branch_id for tpl in templates if tpl.branch_id is not None}
     branches_map: dict[int, str] = {}
     if branch_ids:
@@ -110,7 +92,6 @@ async def list_templates(
             ).scalars().all()
         }
 
-    # ── batch 2: item counts via SQL aggregate (no row transfer) ─────────────
     tpl_ids = [tpl.id for tpl in templates]
     counts_rows = (
         await db.execute(
@@ -209,7 +190,6 @@ async def update_template(
         b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
         branch_name = b.name if b else None
 
-    # Use SQL COUNT — no need to transfer item rows just to count them.
     cnt = (
         await db.execute(
             select(func.count()).where(ChecklistTemplateItem.template_id == tpl.id)
@@ -240,14 +220,15 @@ async def add_item(
 ):
     await _get_or_404(template_id, db)
     await _validate_standard_code(data.standard_code, db)
-    # Use None-check so sort_order=0 is treated as a valid explicit first position,
-    # not as "not provided". The old `if data.sort_order` falsy check silently
-    # discarded 0 and auto-assigned the next slot instead.
     sort_order = data.sort_order if data.sort_order is not None else await _next_sort_order(template_id, db)
     item = ChecklistTemplateItem(
         template_id=template_id,
         title=data.title.strip(),
+        title_uz=data.title_uz.strip() if data.title_uz else None,
+        title_en=data.title_en.strip() if data.title_en else None,
         description=data.description,
+        description_uz=data.description_uz,
+        description_en=data.description_en,
         sort_order=sort_order,
         is_required=data.is_required,
         standard_code=data.standard_code,
@@ -281,7 +262,11 @@ async def update_item(
         raise HTTPException(status_code=404, detail="Пункт не найден")
 
     item.title = data.title.strip()
+    item.title_uz = data.title_uz.strip() if data.title_uz else None
+    item.title_en = data.title_en.strip() if data.title_en else None
     item.description = data.description
+    item.description_uz = data.description_uz
+    item.description_en = data.description_en
     item.sort_order = data.sort_order
     item.is_required = data.is_required
     item.standard_code = data.standard_code

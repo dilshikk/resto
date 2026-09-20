@@ -11,6 +11,5 @@ class Role(Base):
     name_ru: Mapped[str] = mapped_column(String(100), nullable=False)
     name_uz: Mapped[str | None] = mapped_column(String(100))
     name_en: Mapped[str | None] = mapped_column(String(100))
-    name_tr: Mapped[str | None] = mapped_column(String(100))
     category: Mapped[str] = mapped_column(String(20), nullable=False)  # staff | management
     permission_level: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)

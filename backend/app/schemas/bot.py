@@ -15,6 +15,8 @@ class BotEmployeeOut(BaseModel):
     role_level: int
     primary_branch_name: str
     status: str
+    # Preferred language for Telegram bot messages: "ru" | "uz" | "en"
+    preferred_language: str = "ru"
 
 
 class BotToggleRequest(BaseModel):

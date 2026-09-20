@@ -23,6 +23,7 @@ from app.schemas.employee import (
 router = APIRouter(prefix="/employees", tags=["employees"])
 
 INVITE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_VALID_LANGS = frozenset({"ru", "uz", "en"})
 
 
 def _gen_invite() -> str:
@@ -72,6 +73,7 @@ def _employee_out_from_cache(
         has_claimed_account=emp.id in claimed_employee_ids,
         telegram_linked=emp.telegram_id is not None,
         hired_at=emp.hired_at,
+        preferred_language=emp.preferred_language or "ru",
         created_at=emp.created_at,
         updated_at=emp.updated_at,
     )
@@ -115,6 +117,7 @@ async def get_my_profile(
         primary_branch_id=current.primary_branch_id,
         primary_branch_name=branch.name if branch else "—",
         additional_branch_ids=current.additional_branch_ids or [],
+        preferred_language=current.preferred_language or "ru",
     )
 
 
@@ -204,6 +207,7 @@ async def create_employee(
             break
         invite_code = _gen_invite()
 
+    lang = data.preferred_language if data.preferred_language in _VALID_LANGS else "ru"
     emp = Employee(
         full_name=data.full_name.strip(),
         phone=data.phone,
@@ -213,6 +217,7 @@ async def create_employee(
         status="active",
         invite_code=invite_code,
         hired_at=data.hired_at,
+        preferred_language=lang,
     )
     db.add(emp)
     await db.commit()
@@ -267,6 +272,9 @@ async def update_employee(
         emp.status = data.status
     if "hired_at" in sent:
         emp.hired_at = data.hired_at
+    if "preferred_language" in sent and data.preferred_language is not None:
+        if data.preferred_language in _VALID_LANGS:
+            emp.preferred_language = data.preferred_language
 
     await db.commit()
     await db.refresh(emp)
@@ -386,7 +394,8 @@ async def bootstrap_director(
         db.add(director_role)
         await db.flush()
 
-    branch = Branch(name=branch_name, timezone=body.timezone, is_active=True)
+    from app.models.branch import Branch as BranchModel
+    branch = BranchModel(name=branch_name, timezone=body.timezone, is_active=True)
     db.add(branch)
     await db.flush()
 
@@ -397,6 +406,7 @@ async def bootstrap_director(
         invite_code=_gen_invite(),
         primary_branch_id=branch.id,
         additional_branch_ids=[],
+        preferred_language="ru",
     )
     db.add(emp)
     await db.commit()

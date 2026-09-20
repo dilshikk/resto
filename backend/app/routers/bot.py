@@ -31,6 +31,7 @@ from app.routers.checklists import (
     _get_ordered_items,
 )
 from app.models.checklist import Checklist, ChecklistItem
+from app.models.standard import Standard
 from app.schemas.bot import BotEmployeeOut, BotLinkRequest, BotSkipRequest, BotToggleRequest
 from app.schemas.checklist import ChecklistItemOut, ChecklistOut, CurrentItemOut
 
@@ -40,27 +41,43 @@ router = APIRouter(
     dependencies=[Depends(verify_bot_secret)],
 )
 
-# Content types the bot is allowed to upload.
-# Mirrors the web panel check; kept as a module-level constant so both paths
-# can reference the same allow-list without duplicating the string literals.
 _ALLOWED_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
-
-# Maximum photo size accepted by the bot router.
-# Must stay in sync with MAX_PHOTO_BYTES in bot/app/handlers/checklists.py.
-# The web router (checklists.py) enforces a stricter 8 MB limit for browser uploads.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+
+_VALID_LANGS = frozenset({"ru", "uz", "en"})
+
+
+def _pick_localized(ru: str, uz: str | None, en: str | None, lang: str) -> str:
+    """Return the best available translation; fall back to Russian."""
+    if lang == "uz" and uz:
+        return uz
+    if lang == "en" and en:
+        return en
+    return ru
+
+
+def _pick_role_name(role: Role | None, lang: str) -> str:
+    if not role:
+        return "—"
+    if lang == "uz" and role.name_uz:
+        return role.name_uz
+    if lang == "en" and role.name_en:
+        return role.name_en
+    return role.name_ru
 
 
 async def _to_bot_employee_out(emp: Employee, db: AsyncSession) -> BotEmployeeOut:
     role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
     branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
+    lang = emp.preferred_language or "ru"
     return BotEmployeeOut(
         id=emp.id,
         full_name=emp.full_name,
-        role_name=role.name_ru if role else "—",
+        role_name=_pick_role_name(role, lang),
         role_level=role.permission_level if role else 0,
         primary_branch_name=branch.name if branch else "—",
         status=emp.status,
+        preferred_language=lang,
     )
 
 
@@ -118,8 +135,19 @@ async def list_my_checklists_today(telegram_id: int, db: AsyncSession = Depends(
 async def get_my_current_item(
     checklist_id: int,
     telegram_id: int,
+    lang: str = "ru",
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Return the next pending item for the bot's step-by-step flow.
+
+    The `lang` query parameter controls which language the title and
+    description are returned in ("ru" | "uz" | "en").  Falls back to
+    Russian if the requested translation is not available.
+    """
+    if lang not in _VALID_LANGS:
+        lang = "ru"
+
     await get_employee_by_telegram_id(telegram_id, db)  # ensures linked + active
     cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
     if not cl:
@@ -133,17 +161,40 @@ async def get_my_current_item(
         return None
 
     position = next(i for i, it in enumerate(items, 1) if it.id == item.id)
+
+    # Resolve standard title
+    standard_title = None
+    if item.standard_code:
+        standard = (
+            await db.execute(select(Standard).where(Standard.code == item.standard_code))
+        ).scalar_one_or_none()
+        standard_title = standard.title if standard else None
+
+    # Pick localized title and description
+    title = _pick_localized(
+        item.title,
+        getattr(item, "title_uz", None),
+        getattr(item, "title_en", None),
+        lang,
+    )
+    description = _pick_localized(
+        item.description or "",
+        getattr(item, "description_uz", None),
+        getattr(item, "description_en", None),
+        lang,
+    ) or None
+
     return CurrentItemOut(
         id=item.id,
         checklist_id=item.checklist_id,
-        title=item.title,
-        description=item.description,
+        title=title,
+        description=description,
         is_required=item.is_required,
         sort_order=item.sort_order,
         total_items=len(items),
         current_position=position,
         standard_code=item.standard_code,
-        standard_title=None,
+        standard_title=standard_title,
         requires_photo=item.requires_photo,
         requires_comment=item.requires_comment,
     )
@@ -166,8 +217,6 @@ async def get_item(
     ).scalar_one_or_none()
     if not item:
         raise HTTPException(status_code=404, detail="Пункт не найден")
-    # Re-use the batch builder even for a single item — consistent serialisation
-    # and no duplicated Photo / Employee / Standard lookup logic.
     outs = await _build_items_batch([item], db)
     return outs[0]
 
@@ -200,7 +249,6 @@ async def toggle_item(
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
 
-    # Only enforce confirmation requirements when marking as completed (not un-completing).
     completing = not item.is_completed
     if completing:
         await _assert_completion_requirements(item, body.note, db)
@@ -294,9 +342,6 @@ async def upload_item_photo(
     if not item:
         raise HTTPException(status_code=404, detail="Пункт не найден")
 
-    # Validate content type — mirrors the web panel check.
-    # The bot always sends Telegram-downloaded files, but we enforce the check
-    # here so a misconfigured or malicious bot process can’t store arbitrary files.
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_IMAGE_TYPES:
         raise HTTPException(
@@ -339,21 +384,8 @@ async def delete_item_photo(
     telegram_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Delete a photo attached to a checklist item.
-
-    Access rules (mirror the web router):
-      • The employee who uploaded the photo can always delete it.
-      • Managers and above (permission_level >= 1) can delete any photo
-        within their accessible branches.
-
-    Every deletion is recorded in the audit log so the full evidence trail
-    required by the spec (\u00abкаждое действие сотрудника сохраняется») is maintained
-    even when the deletion happens through the Telegram bot.
-    """
     emp = await get_employee_by_telegram_id(telegram_id, db)
 
-    # Verify the item belongs to the stated checklist.
     item = (
         await db.execute(
             select(ChecklistItem).where(
@@ -373,7 +405,6 @@ async def delete_item_photo(
     if not photo:
         raise HTTPException(status_code=404, detail="Фото не найдено")
 
-    # Least-privilege check: own photo OR manager+
     if photo.uploaded_by_employee_id != emp.id:
         role = (
             await db.execute(select(Role).where(Role.id == emp.role_id))
@@ -381,8 +412,6 @@ async def delete_item_photo(
         if not role or role.permission_level < 1:
             raise HTTPException(status_code=403, detail="Недостаточно прав")
 
-    # Record deletion BEFORE the row disappears so the log entry is part of
-    # the same transaction and is rolled back if anything else fails.
     original_uploader_id = photo.uploaded_by_employee_id
     await db.delete(photo)
     await log_action(

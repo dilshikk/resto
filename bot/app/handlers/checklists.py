@@ -4,7 +4,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app import api_client
 from app.api_client import ApiError
-from app.i18n import get_lang, t
+from app.i18n import t
 from app.keyboards import (
     back_to_list_keyboard,
     checklists_keyboard,
@@ -26,7 +26,7 @@ def _item_text(item: dict, lang: str) -> str:
     lines = [
         t("step_header", lang, current=item["current_position"], total=item["total_items"]),
         "",
-        f"\ud83d\udccb {item['title']}",
+        f"\U0001f4cb {item['title']}",
     ]
     if item.get("description"):
         lines.append(item["description"])
@@ -44,20 +44,20 @@ async def _show_current_item_or_finish(
     lang: str,
 ) -> None:
     message = target.message if isinstance(target, CallbackQuery) else target
-    item = await api_client.get_current_item(telegram_id, checklist_id)
+    item = await api_client.get_current_item(telegram_id, checklist_id, lang)
     if item is None:
         await message.answer(
             t("checklist_done", lang),
-            reply_markup=back_to_list_keyboard(),
+            reply_markup=back_to_list_keyboard(lang),
         )
         return
     await message.answer(
         _item_text(item, lang),
-        reply_markup=item_keyboard(checklist_id, item["id"], is_required=item["is_required"]),
+        reply_markup=item_keyboard(checklist_id, item["id"], is_required=item["is_required"], lang=lang),
     )
 
 
-async def _download_photo(bot, file_id: str, lang: str, message: Message) -> bytes | None:
+async def _download_photo(bot, file_id: str, lang: str, message: Message) -> bytes | None:  # noqa: ANN001
     """
     Resolve the Telegram file object, check its size, then download it.
     Returns the raw bytes on success, or None after sending an error reply.
@@ -74,7 +74,7 @@ async def _download_photo(bot, file_id: str, lang: str, message: Message) -> byt
 
 @router.message(F.text == "/today")
 async def show_today(message: Message) -> None:
-    lang = get_lang(message.from_user.language_code)
+    lang = await api_client.get_employee_lang(message.from_user.id)
     await _send_checklists_list(message, message.from_user.id, lang)
 
 
@@ -92,27 +92,27 @@ async def _send_checklists_list(message: Message, telegram_id: int, lang: str) -
         await message.answer(t("no_checklists", lang))
         return
 
-    await message.answer(t("checklists_today", lang), reply_markup=checklists_keyboard(checklists))
+    await message.answer(t("checklists_today", lang), reply_markup=checklists_keyboard(checklists, lang))
 
 
 @router.callback_query(F.data == "back:checklists")
 async def back_to_checklists(callback: CallbackQuery) -> None:
     await callback.answer()
-    lang = get_lang(callback.from_user.language_code)
+    lang = await api_client.get_employee_lang(callback.from_user.id)
     await _send_checklists_list(callback.message, callback.from_user.id, lang)
 
 
 @router.callback_query(F.data.startswith("cl:"))
 async def open_checklist(callback: CallbackQuery) -> None:
     await callback.answer()
-    lang = get_lang(callback.from_user.language_code)
+    lang = await api_client.get_employee_lang(callback.from_user.id)
     checklist_id = int(callback.data.split(":")[1])
     await _show_current_item_or_finish(callback, callback.from_user.id, checklist_id, lang)
 
 
 @router.callback_query(F.data.startswith("done:"))
 async def mark_done(callback: CallbackQuery) -> None:
-    lang = get_lang(callback.from_user.language_code)
+    lang = await api_client.get_employee_lang(callback.from_user.id)
     _, checklist_id, item_id = callback.data.split(":")
     try:
         await api_client.toggle_item(callback.from_user.id, int(checklist_id), int(item_id))
@@ -125,7 +125,7 @@ async def mark_done(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("skip:"))
 async def skip_item(callback: CallbackQuery) -> None:
-    lang = get_lang(callback.from_user.language_code)
+    lang = await api_client.get_employee_lang(callback.from_user.id)
     _, checklist_id, item_id = callback.data.split(":")
     try:
         await api_client.skip_item(callback.from_user.id, int(checklist_id), int(item_id))
@@ -139,7 +139,7 @@ async def skip_item(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("problem:"))
 async def ask_problem_comment(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    lang = get_lang(callback.from_user.language_code)
+    lang = await api_client.get_employee_lang(callback.from_user.id)
     _, checklist_id, item_id = callback.data.split(":")
     await state.set_state(ItemStates.waiting_for_problem_comment)
     await state.update_data(checklist_id=int(checklist_id), item_id=int(item_id), lang=lang)
@@ -150,7 +150,7 @@ async def ask_problem_comment(callback: CallbackQuery, state: FSMContext) -> Non
 async def receive_problem_comment(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     checklist_id, item_id = data["checklist_id"], data["item_id"]
-    lang: str = data.get("lang") or get_lang(message.from_user.language_code)
+    lang: str = data.get("lang") or await api_client.get_employee_lang(message.from_user.id)
     try:
         note = t("problem_prefix", lang, text=message.text)
         await api_client.toggle_item(message.from_user.id, checklist_id, item_id, note=note)
@@ -167,7 +167,7 @@ async def receive_problem_comment(message: Message, state: FSMContext) -> None:
 async def receive_problem_photo(message: Message, state: FSMContext, bot) -> None:  # noqa: ANN001
     data = await state.get_data()
     checklist_id, item_id = data["checklist_id"], data["item_id"]
-    lang: str = data.get("lang") or get_lang(message.from_user.language_code)
+    lang: str = data.get("lang") or await api_client.get_employee_lang(message.from_user.id)
 
     raw = await _download_photo(bot, message.photo[-1].file_id, lang, message)
     if raw is None:
@@ -194,7 +194,7 @@ async def receive_problem_photo(message: Message, state: FSMContext, bot) -> Non
 
 @router.message(F.photo)
 async def receive_standalone_photo(message: Message, state: FSMContext) -> None:
-    lang = get_lang(message.from_user.language_code)
+    lang = await api_client.get_employee_lang(message.from_user.id)
     telegram_id = message.from_user.id
     try:
         checklists = await api_client.list_checklists_today(telegram_id)
@@ -219,7 +219,7 @@ async def receive_standalone_photo(message: Message, state: FSMContext) -> None:
 
     if len(pending) == 1:
         checklist_id = pending[0]["id"]
-        item = await api_client.get_current_item(telegram_id, checklist_id)
+        item = await api_client.get_current_item(telegram_id, checklist_id, lang)
         if item is None:
             await state.clear()
             await message.answer(t("all_items_done", lang))
@@ -228,13 +228,13 @@ async def receive_standalone_photo(message: Message, state: FSMContext) -> None:
         await state.set_state(PhotoStates.waiting_for_confirmation)
         await message.answer(
             t("photo_confirm", lang, template=pending[0]["template_name"], item=item["title"]),
-            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"], lang),
         )
     else:
         await state.set_state(PhotoStates.waiting_for_checklist_choice)
         await message.answer(
             t("pick_checklist", lang),
-            reply_markup=photo_checklist_keyboard(pending),
+            reply_markup=photo_checklist_keyboard(pending, lang),
         )
 
 
@@ -244,9 +244,9 @@ async def photo_checklist_chosen(callback: CallbackQuery, state: FSMContext) -> 
     checklist_id = int(callback.data.split(":")[1])
     telegram_id = callback.from_user.id
     data = await state.get_data()
-    lang: str = data.get("lang") or get_lang(callback.from_user.language_code)
+    lang: str = data.get("lang") or await api_client.get_employee_lang(callback.from_user.id)
 
-    item = await api_client.get_current_item(telegram_id, checklist_id)
+    item = await api_client.get_current_item(telegram_id, checklist_id, lang)
     if item is None:
         await state.clear()
         await callback.message.answer(t("no_pending_items", lang))
@@ -258,12 +258,12 @@ async def photo_checklist_chosen(callback: CallbackQuery, state: FSMContext) -> 
     try:
         await callback.message.edit_text(
             t("photo_confirm_short", lang, item=item["title"]),
-            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"], lang),
         )
     except Exception:
         await callback.message.answer(
             t("photo_confirm_short", lang, item=item["title"]),
-            reply_markup=photo_confirm_keyboard(checklist_id, item["title"]),
+            reply_markup=photo_confirm_keyboard(checklist_id, item["title"], lang),
         )
 
 
@@ -274,13 +274,13 @@ async def photo_confirmed(callback: CallbackQuery, state: FSMContext, bot) -> No
     checklist_id = data["checklist_id"]
     item_id = data["item_id"]
     file_id = data["file_id"]
-    lang: str = data.get("lang") or get_lang(callback.from_user.language_code)
+    lang: str = data.get("lang") or await api_client.get_employee_lang(callback.from_user.id)
     telegram_id = callback.from_user.id
 
     await state.clear()
 
-    item = await api_client.get_current_item(telegram_id, checklist_id)
-    item_title = item["title"] if item else "—"
+    item = await api_client.get_current_item(telegram_id, checklist_id, lang)
+    item_title = item["title"] if item else "\u2014"
 
     raw = await _download_photo(bot, file_id, lang, callback.message)
     if raw is None:
@@ -306,7 +306,7 @@ async def photo_confirmed(callback: CallbackQuery, state: FSMContext, bot) -> No
 async def photo_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     data = await state.get_data()
-    lang: str = data.get("lang") or get_lang(callback.from_user.language_code)
+    lang: str = data.get("lang") or await api_client.get_employee_lang(callback.from_user.id)
     await state.clear()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)

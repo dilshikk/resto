@@ -9,6 +9,7 @@ class EmployeeCreate(BaseModel):
     primary_branch_id: int
     additional_branch_ids: list[int] = []
     hired_at: str | None = None
+    preferred_language: str = "ru"
 
 
 class EmployeeUpdate(BaseModel):
@@ -24,6 +25,7 @@ class EmployeeUpdate(BaseModel):
     additional_branch_ids: list[int] | None = None
     status: str | None = None
     hired_at: str | None = None
+    preferred_language: str | None = None
 
 
 class EmployeeOut(BaseModel):
@@ -42,6 +44,7 @@ class EmployeeOut(BaseModel):
     has_claimed_account: bool
     telegram_linked: bool
     hired_at: str | None = None
+    preferred_language: str = "ru"
     created_at: datetime
     updated_at: datetime
 
@@ -57,6 +60,7 @@ class MyProfile(BaseModel):
     primary_branch_id: int
     primary_branch_name: str
     additional_branch_ids: list[int]
+    preferred_language: str = "ru"
 
 
 class BootstrapRequest(BaseModel):

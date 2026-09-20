@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict
 
 class TemplateItemCreate(BaseModel):
     title: str
+    title_uz: str | None = None
+    title_en: str | None = None
     description: str | None = None
+    description_uz: str | None = None
+    description_en: str | None = None
     sort_order: int = 0
     is_required: bool = True
     standard_code: str | None = None
@@ -69,7 +73,11 @@ class ChecklistItemOut(BaseModel):
     id: int
     checklist_id: int
     title: str
+    title_uz: str | None = None
+    title_en: str | None = None
     description: str | None = None
+    description_uz: str | None = None
+    description_en: str | None = None
     is_required: bool
     sort_order: int
     is_completed: bool

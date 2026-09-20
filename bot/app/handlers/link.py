@@ -13,8 +13,11 @@ router = Router(name="link")
 
 async def _greet_linked_employee(message: Message, telegram_id: int, lang: str) -> None:
     me = await api_client.get_me(telegram_id)
+    # Use employee's configured preferred language; update the cache
+    emp_lang = me.get("preferred_language") or lang
+    api_client.set_lang_cache(telegram_id, emp_lang)
     await message.answer(
-        t("welcome_linked", lang,
+        t("welcome_linked", emp_lang,
           name=me["full_name"],
           role=me["role_name"],
           branch=me["primary_branch_name"])
@@ -24,6 +27,7 @@ async def _greet_linked_employee(message: Message, telegram_id: int, lang: str) 
 @router.message(CommandStart(deep_link=True))
 async def start_with_code(message: Message, command: CommandObject, state: FSMContext) -> None:
     telegram_id = message.from_user.id
+    # Initial language from Telegram UI — used only before the account is linked
     lang = get_lang(message.from_user.language_code)
     code = (command.args or "").strip()
 
@@ -90,8 +94,11 @@ async def _try_link(
         return
 
     await state.clear()
+    # Switch to the employee's configured language immediately
+    emp_lang = me.get("preferred_language") or lang
+    api_client.set_lang_cache(telegram_id, emp_lang)
     await message.answer(
-        t("account_linked", lang,
+        t("account_linked", emp_lang,
           role=me["role_name"],
           branch=me["primary_branch_name"])
     )

@@ -31,15 +31,19 @@ class ChecklistTemplateItem(Base):
     template_id: Mapped[int] = mapped_column(
         ForeignKey("checklist_templates.id", ondelete="CASCADE"), nullable=False
     )
+    # Russian title (required, used as default fallback)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
+    # Localized titles (optional, fallback to title if empty)
+    title_uz: Mapped[str | None] = mapped_column(String(300))
+    title_en: Mapped[str | None] = mapped_column(String(300))
     description: Mapped[str | None] = mapped_column(String(500))
+    description_uz: Mapped[str | None] = mapped_column(String(500))
+    description_en: Mapped[str | None] = mapped_column(String(500))
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Optional link to a MADO standard (e.g. "SERVICE-04"), see app/models/standard.py
     standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
     # Confirmation requirements — enforced at item-completion time.
-    # requires_photo:   employee must attach at least one photo.
-    # requires_comment: employee must supply a non-empty note/comment.
     requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -55,21 +59,10 @@ class Checklist(Base):
     date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     created_by_employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), nullable=False)
-    # Deadline tracking fields — NULL for checklists created before migration 011.
-    # started_at:   when the checklist was created (set on insert, not updated).
-    # due_at:       calculated deadline (started_at + template.deadline_offset_minutes).
-    # completed_at: set when status transitions to "completed".
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     due_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    # Escalation tracking — set by overdue_escalation background task.
-    # overdue_manager_notified_at:    timestamp when managers (permission_level==1)
-    #                                 were notified about this overdue checklist.
-    # overdue_supervisor_notified_at: timestamp when supervisors/directors
-    #                                 (permission_level>=2) were escalated to.
-    # NULL means the respective wave has not been sent yet.
     overdue_manager_notified_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -85,21 +78,21 @@ class ChecklistItem(Base):
     checklist_id: Mapped[int] = mapped_column(
         ForeignKey("checklists.id", ondelete="CASCADE"), nullable=False
     )
+    # Russian title (required, used as default fallback)
     title: Mapped[str] = mapped_column(String(300), nullable=False)  # denormalized
+    # Localized titles (denormalized from template item at checklist creation)
+    title_uz: Mapped[str | None] = mapped_column(String(300))
+    title_en: Mapped[str | None] = mapped_column(String(300))
     description: Mapped[str | None] = mapped_column(String(500))  # denormalized
+    description_uz: Mapped[str | None] = mapped_column(String(500))
+    description_en: Mapped[str | None] = mapped_column(String(500))
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # is_skipped: True only when is_required=False and the employee chose to skip this step.
-    # Required items (is_required=True) can never be skipped.
     is_skipped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     completed_by_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"))
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(String(500))
-    # denormalized from the template item, so historical checklists keep their standard link
     standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
-    # Confirmation requirements — denormalized from template item at checklist creation time.
-    # requires_photo:   employee must attach at least one photo before completing.
-    # requires_comment: employee must provide a non-empty note before completing.
     requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

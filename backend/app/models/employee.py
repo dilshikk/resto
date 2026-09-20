@@ -18,6 +18,8 @@ class Employee(Base):
     primary_branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
     additional_branch_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
     hired_at: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
+    # Preferred UI language for the Telegram bot: "ru" | "uz" | "en"
+    preferred_language: Mapped[str] = mapped_column(String(5), nullable=False, default="ru")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
