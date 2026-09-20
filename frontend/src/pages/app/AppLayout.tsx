@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getMyProfile } from "@/api/employees.ts";
-import { useAuth } from "@/context/auth-context.tsx";
+import { useAuth } from "../context/auth-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,8 @@ import {
   BarChart3,
   ChefHat,
   LogOut,
+  CalendarDays,
+  BookOpen,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -21,8 +23,10 @@ const NAV_ITEMS = [
   { to: "/app/checklists", label: "Чек-листы", icon: ClipboardList, minLevel: 0 },
   { to: "/app/issues", label: "Проблемы", icon: AlertTriangle, minLevel: 1 },
   { to: "/app/employees", label: "Сотрудники", icon: Users, minLevel: 1 },
+  { to: "/app/shifts", label: "Смены", icon: CalendarDays, minLevel: 1 },
   { to: "/app/branches", label: "Филиалы", icon: Building2, minLevel: 2 },
   { to: "/app/templates", label: "Шаблоны", icon: ClipboardList, minLevel: 1 },
+  { to: "/app/standards", label: "Стандарты", icon: BookOpen, minLevel: 2 },
   { to: "/app/reports", label: "Аналитика", icon: BarChart3, minLevel: 1 },
 ];
 

@@ -11,6 +11,7 @@ import {
 } from "@/api/checklists.ts";
 import type { ChecklistTemplate, TemplateCreate } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
+import { listStandards } from "@/api/standards.ts";
 import { ClipboardList, Plus, Trash2, ChevronRight, Camera, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
@@ -140,10 +141,16 @@ function CreateTemplateModal({
 
 function AddItemModal({ templateId, onClose }: { templateId: number; onClose: () => void }) {
   const qc = useQueryClient();
+  const { data: standards } = useQuery({
+    queryKey: ["standards", "all", false],
+    queryFn: () => listStandards(),
+  });
+
   const [title, setTitle] = useState("");
   const [isRequired, setIsRequired] = useState(true);
   const [requiresPhoto, setRequiresPhoto] = useState(false);
   const [requiresComment, setRequiresComment] = useState(false);
+  const [standardCode, setStandardCode] = useState("");
 
   const mut = useMutation({
     mutationFn: () =>
@@ -152,6 +159,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
         is_required: isRequired,
         requires_photo: requiresPhoto,
         requires_comment: requiresComment,
+        standard_code: standardCode || undefined,
       }),
     onSuccess: () => {
       toast.success("Пункт добавлен");
@@ -182,6 +190,21 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
               required
               autoFocus
             />
+          </div>
+
+          {/* Standard code */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Стандарт <span className="text-muted-foreground font-normal">(необязательно)</span></label>
+            <select
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              value={standardCode}
+              onChange={(e) => setStandardCode(e.target.value)}
+            >
+              <option value="">Без привязки к стандарту</option>
+              {standards?.map((s) => (
+                <option key={s.code} value={s.code}>{s.code} — {s.title}</option>
+              ))}
+            </select>
           </div>
 
           <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -244,7 +267,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
               disabled={mut.isPending || !title.trim()}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              Добавить
+              {mut.isPending ? "Добавляем..." : "Добавить"}
             </button>
           </div>
         </form>
@@ -363,6 +386,9 @@ function TemplateDetailPanel({
                   <div className="flex flex-wrap items-center gap-2 mt-0.5">
                     {!item.is_required && (
                       <span className="text-xs text-muted-foreground">Необязательный</span>
+                    )}
+                    {item.standard_code && (
+                      <span className="font-mono text-xs text-primary/70">{item.standard_code}</span>
                     )}
                     {item.requires_photo && (
                       <span className="inline-flex items-center gap-0.5 text-xs text-blue-600 dark:text-blue-400">
