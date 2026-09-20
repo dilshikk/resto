@@ -1,11 +1,15 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
 from app.database import engine, Base
+from app.rate_limit import limiter
 from app.tasks.revoked_token_cleanup import run_revoked_token_cleanup_loop
 from app.routers import (
     auth,
@@ -46,6 +50,12 @@ app = FastAPI(
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
+
+# ── Rate limiter (SlowAPI) ────────────────────────────────────────────────────
+# The limiter singleton is defined in app/rate_limit.py and shared with routers.
+# The exception handler converts RateLimitExceeded into a standard HTTP 429.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
