@@ -12,7 +12,7 @@ Usage
   from app.i18n import t, get_lang
 
   lang = get_lang(message.from_user.language_code)  # "ru" | "uz" | "en"
-  await message.answer(t("welcome_linked", lang, name="Alice", role="Менеджер", branch="ТЦ Мall"))
+  await message.answer(t("welcome_linked", lang, name="Alice", role="Менеджер", branch="ТЦ Mall"))
 
 Key guidelines
 ──────────────
@@ -86,6 +86,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Фото прикреплено к пункту \u00ab{item}\u00bb ✅",
         "photo_cancelled": "Фото отменено. Отправьте /today, чтобы продолжить работу.",
         "detect_checklist_error": "Не удалось определить чек-лист: {detail}",
+        "photo_too_large": "Фото слишком большое ({size_mb} МБ). Максимальный размер: 8 МБ.",
 
         # ── Bot command descriptions ──
         "cmd_start_desc": "Начать / привязать аккаунт",
@@ -150,6 +151,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Rasm \u00ab{item}\u00bb bandiga biriktirildi ✅",
         "photo_cancelled": "Rasm bekor qilindi. Davom etish uchun /today yuboring.",
         "detect_checklist_error": "Chek-ro'yxatni aniqlab bo'lmadi: {detail}",
+        "photo_too_large": "Rasm juda katta ({size_mb}\u00a0MB). Maksimal hajm: 8\u00a0MB.",
         "cmd_start_desc": "Boshlash / hisobni bog'lash",
         "cmd_today_desc": "Bugungi chek-ro'yxatlar",
     },
@@ -212,6 +214,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_attached": "Photo attached to \u00ab{item}\u00bb ✅",
         "photo_cancelled": "Photo cancelled. Send /today to continue.",
         "detect_checklist_error": "Could not detect checklist: {detail}",
+        "photo_too_large": "Photo is too large ({size_mb}\u00a0MB). Maximum size: 8\u00a0MB.",
         "cmd_start_desc": "Start / link account",
         "cmd_today_desc": "Today's checklists",
     },

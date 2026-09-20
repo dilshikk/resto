@@ -16,6 +16,10 @@ from app.states import ItemStates, PhotoStates
 
 router = Router(name="checklists")
 
+# Telegram's own hard limit is 20 MB, but the backend rejects anything over 8 MB.
+# We check here so we never download a file we know the backend will refuse.
+MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8 MB
+
 
 def _item_text(item: dict, lang: str) -> str:
     lines = [
@@ -50,6 +54,21 @@ async def _show_current_item_or_finish(
         _item_text(item, lang),
         reply_markup=item_keyboard(checklist_id, item["id"], is_required=item["is_required"]),
     )
+
+
+async def _download_photo(bot, file_id: str, lang: str, message: Message) -> bytes | None:
+    """
+    Resolve the Telegram file object, check its size, then download it.
+    Returns the raw bytes on success, or None after sending an error reply.
+    """
+    file = await bot.get_file(file_id)
+    size = file.file_size or 0
+    if size > MAX_PHOTO_BYTES:
+        mb = size / (1024 * 1024)
+        await message.answer(t("photo_too_large", lang, size_mb=f"{mb:.1f}"))
+        return None
+    buf = await bot.download_file(file.file_path)
+    return buf.read()
 
 
 @router.message(F.text == "/today")
@@ -148,11 +167,15 @@ async def receive_problem_photo(message: Message, state: FSMContext, bot) -> Non
     data = await state.get_data()
     checklist_id, item_id = data["checklist_id"], data["item_id"]
     lang: str = data.get("lang") or get_lang(message.from_user.language_code)
-    file = await bot.get_file(message.photo[-1].file_id)
-    file_bytes = await bot.download_file(file.file_path)
+
+    raw = await _download_photo(bot, message.photo[-1].file_id, lang, message)
+    if raw is None:
+        await state.clear()
+        return
+
     try:
         await api_client.upload_item_photo(
-            message.from_user.id, checklist_id, item_id, file_bytes.read(), "problem.jpg"
+            message.from_user.id, checklist_id, item_id, raw, "problem.jpg"
         )
         caption = message.caption
         note = t("problem_prefix", lang, text=caption) if caption else t("problem_photo", lang)
@@ -181,6 +204,13 @@ async def receive_standalone_photo(message: Message, state: FSMContext) -> None:
     pending = [c for c in checklists if c["status"] != "completed"]
     if not pending:
         await message.answer(t("no_active_checklists", lang))
+        return
+
+    # Check size before committing to the FSM flow.
+    photo_size = message.photo[-1].file_size or 0
+    if photo_size > MAX_PHOTO_BYTES:
+        mb = photo_size / (1024 * 1024)
+        await message.answer(t("photo_too_large", lang, size_mb=f"{mb:.1f}"))
         return
 
     file_id = message.photo[-1].file_id
@@ -251,11 +281,13 @@ async def photo_confirmed(callback: CallbackQuery, state: FSMContext, bot) -> No
     item = await api_client.get_current_item(telegram_id, checklist_id)
     item_title = item["title"] if item else "—"
 
+    raw = await _download_photo(bot, file_id, lang, callback.message)
+    if raw is None:
+        return
+
     try:
-        file = await bot.get_file(file_id)
-        file_bytes = await bot.download_file(file.file_path)
         await api_client.upload_item_photo(
-            telegram_id, checklist_id, item_id, file_bytes.read(), "confirm.jpg"
+            telegram_id, checklist_id, item_id, raw, "confirm.jpg"
         )
     except ApiError as e:
         await callback.message.answer(t("photo_save_error", lang, detail=e.detail))
