@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     # docker-compose.yml's `uploads_data` volume on the backend service.
     PHOTOS_DIR: str = "/data/uploads"
 
+    # ── Automatic checklist generation ───────────────────────────────────────
+    #
+    # CHECKLIST_SCHEDULE_HOUR_UTC
+    #   Hour of day (UTC, 0-23) when the daily scheduler runs.
+    #   Default: 1 = 01:00 UTC, which is 06:00 for Asia/Tashkent (UTC+5).
+    #   Set to the UTC hour that corresponds to early morning in your
+    #   primary timezone so checklists are ready when the first shift starts.
+    #   Example: for UTC+3 use 21 (previous day 21:00 UTC = midnight local).
+    CHECKLIST_SCHEDULE_HOUR_UTC: int = 1
+
+    # CHECKLIST_AUTO_SHIFTS
+    #   Comma-separated list of shift codes to generate automatically.
+    #   Must match values used in Checklist.shift (morning / afternoon / evening).
+    #   Remove a shift to stop generating it automatically.
+    CHECKLIST_AUTO_SHIFTS: str = "morning,afternoon,evening"
+
     # ── Runtime validation ────────────────────────────────────────────────────
 
     @field_validator("SECRET_KEY")
@@ -47,6 +63,13 @@ class Settings(BaseSettings):
                 "BOT_INTERNAL_SECRET must be at least 32 characters. "
                 "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
+        return v
+
+    @field_validator("CHECKLIST_SCHEDULE_HOUR_UTC")
+    @classmethod
+    def schedule_hour_must_be_valid(cls, v: int) -> int:
+        if not 0 <= v <= 23:
+            raise ValueError("CHECKLIST_SCHEDULE_HOUR_UTC must be between 0 and 23")
         return v
 
     @property
