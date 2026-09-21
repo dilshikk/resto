@@ -26,3 +26,25 @@ def yes_no_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def skip_location_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    """
+    Inline keyboard with a single "Skip geolocation" button for photo_geo
+    task type items.  The employee can skip sending their location and the
+    photo will be uploaded without coordinates.
+
+    Callback data: 'photo_geo:skip_location'
+    """
+    from app.i18n import t
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("skip_location_btn", lang),
+                    callback_data="photo_geo:skip_location",
+                )
+            ]
+        ]
+    )

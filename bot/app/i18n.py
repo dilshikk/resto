@@ -97,6 +97,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "invalid_temperature": "Пожалуйста, введите корректную температуру от -50 до 200 °C.",
         "yes_btn": "Да",
         "no_btn": "Нет",
+        # photo task type
+        "ask_photo": "📷 Сделайте фото и отправьте его:",
+        "ask_photo_wrong_input": "Пожалуйста, отправьте фотографию.",
+        "photo_task_note": "Фото добавлено",
+        # photo_geo task type
+        "ask_photo_geo": "📷 Сделайте фото и отправьте его (после этого запросим геолокацию):",
+        "ask_location": "📍 Теперь отправьте вашу геолокацию (или пропустите):",
+        "skip_location_btn": "Пропустить геолокацию",
+        "photo_geo_note": "📍 {lat}, {lon}",
 
         # ── Bot command descriptions ──
         "cmd_start_desc": "Начать / привязать аккаунт",
@@ -162,8 +171,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_cancelled": "Rasm bekor qilindi. Davom etish uchun /today yuboring.",
         "detect_checklist_error": "Chek-ro'yxatni aniqlab bo'lmadi: {detail}",
         "photo_too_large": "Rasm juda katta ({size_mb}\u00a0MB). Maksimal hajm: 25\u00a0MB.",
-
-        # ── Task type prompts & errors ──
+        # Task type prompts & errors
         "ask_number": "Raqamli qiymat kiriting:",
         "ask_temperature": "Haroratni kiriting (\u00b0C):",
         "ask_text": "Javob yozing:",
@@ -172,7 +180,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "invalid_temperature": "Iltimos, -50 dan 200 \u00b0C gacha harorat kiriting.",
         "yes_btn": "Ha",
         "no_btn": "Yo'q",
-
+        # photo task type
+        "ask_photo": "📷 Rasm oling va yuboring:",
+        "ask_photo_wrong_input": "Iltimos, rasm yuboring.",
+        "photo_task_note": "Rasm qo'shildi",
+        # photo_geo task type
+        "ask_photo_geo": "📷 Rasm oling va yuboring (keyin geolokatsiya so'raymiz):",
+        "ask_location": "📍 Endi geolokatsiyangizni yuboring (yoki o'tkazib yuboring):",
+        "skip_location_btn": "Geolokatsiyani o'tkazib yuborish",
+        "photo_geo_note": "📍 {lat}, {lon}",
         "cmd_start_desc": "Boshlash / hisobni bog'lash",
         "cmd_today_desc": "Bugungi chek-ro'yxatlar",
     },
@@ -236,8 +252,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_cancelled": "Photo cancelled. Send /today to continue.",
         "detect_checklist_error": "Could not detect checklist: {detail}",
         "photo_too_large": "Photo is too large ({size_mb}\u00a0MB). Maximum size: 25\u00a0MB.",
-
-        # ── Task type prompts & errors ──
+        # Task type prompts & errors
         "ask_number": "Enter a numeric value:",
         "ask_temperature": "Enter temperature (\u00b0C):",
         "ask_text": "Type your answer:",
@@ -246,7 +261,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "invalid_temperature": "Please enter a valid temperature between -50 and 200 \u00b0C.",
         "yes_btn": "Yes",
         "no_btn": "No",
-
+        # photo task type
+        "ask_photo": "📷 Take a photo and send it:",
+        "ask_photo_wrong_input": "Please send a photo.",
+        "photo_task_note": "Photo added",
+        # photo_geo task type
+        "ask_photo_geo": "📷 Take a photo and send it (we will ask for your location next):",
+        "ask_location": "📍 Now send your location (or skip):",
+        "skip_location_btn": "Skip location",
+        "photo_geo_note": "📍 {lat}, {lon}",
         "cmd_start_desc": "Start / link account",
         "cmd_today_desc": "Today's checklists",
     },
