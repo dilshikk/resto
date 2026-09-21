@@ -14,6 +14,7 @@ import ReportsPage from "./pages/app/reports/page.tsx";
 import IssuesPage from "./pages/app/issues/page.tsx";
 import ShiftsPage from "./pages/app/shifts/page.tsx";
 import StandardsPage from "./pages/app/standards/page.tsx";
+import PhotosPage from "./pages/app/photos/page.tsx";
 import { useAuth } from "./context/auth-context.tsx";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/app/issues" element={<IssuesPage />} />
             <Route path="/app/shifts" element={<ShiftsPage />} />
             <Route path="/app/standards" element={<StandardsPage />} />
+            <Route path="/app/photos" element={<PhotosPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
