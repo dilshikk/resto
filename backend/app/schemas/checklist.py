@@ -2,7 +2,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
-# ── Template schemas ────────────────────────────────────────────────────────
+# ── Template schemas ────────────────────────────────────────────────────────────
 
 class TemplateItemCreate(BaseModel):
     title: str
@@ -56,7 +56,7 @@ class TemplateDetail(TemplateListItem):
     items: list[TemplateItemOut]
 
 
-# ── Checklist schemas ────────────────────────────────────────────────────────
+# ── Checklist schemas ────────────────────────────────────────────────────────────
 
 class ChecklistCreate(BaseModel):
     template_id: int
@@ -149,3 +149,20 @@ class CurrentItemOut(BaseModel):
     requires_comment: bool = False
     # How the employee completes this item in the Telegram bot
     task_type: str = "checkbox"
+
+
+# Returned by GET /checklists/photos
+# One row per uploaded photo, enriched with checklist/item/branch context.
+class PhotoListItem(BaseModel):
+    id: int
+    checklist_id: int
+    checklist_name: str
+    item_id: int
+    item_title: str
+    branch_id: int
+    branch_name: str
+    shift: str
+    date: str
+    uploaded_by_name: str
+    url: str
+    created_at: datetime
