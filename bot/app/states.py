@@ -15,3 +15,9 @@ class PhotoStates(StatesGroup):
     waiting_for_checklist_choice = State()
     # Checklist is identified; waiting for explicit confirmation before upload.
     waiting_for_confirmation = State()
+
+
+class ReauthStates(StatesGroup):
+    # Bot restarted and lost the in-memory token cache; waiting for the
+    # employee to re-confirm by sending /start so we can restore the token.
+    waiting_for_reauth = State()
