@@ -78,15 +78,25 @@ STRINGS: dict[str, dict[str, str]] = {
             "Отправьте /today, чтобы увидеть список."
         ),
         "all_items_done": "Все пункты выполнены. Фото не прикреплено.",
-        "photo_confirm": "Прикрепить фото к текущему пункту?\n\n\ud83d\udccb {template} \u2192 \u00ab{item}\u00bb",
-        "photo_confirm_short": "Прикрепить фото к текущему пункту?\n\n\ud83d\udccb \u2192 \u00ab{item}\u00bb",
+        "photo_confirm": "Прикрепить фото к текущему пункту?\n\n📋 {template} → «{item}»",
+        "photo_confirm_short": "Прикрепить фото к текущему пункту?\n\n📋 → «{item}»",
         "pick_checklist": "У вас несколько активных чек-листов. К какому прикрепить фото?",
         "no_pending_items": "В выбранном чек-листе нет невыполненных пунктов. Фото не прикреплено.",
         "photo_save_error": "Не удалось сохранить фото: {detail}",
-        "photo_attached": "Фото прикреплено к пункту \u00ab{item}\u00bb ✅",
+        "photo_attached": "Фото прикреплено к пункту «{item}» ✅",
         "photo_cancelled": "Фото отменено. Отправьте /today, чтобы продолжить работу.",
         "detect_checklist_error": "Не удалось определить чек-лист: {detail}",
-        "photo_too_large": "Фото слишком большое ({size_mb} МБ). Максимальный размер: 25 МБ.",
+        "photo_too_large": "Фото слишком большое ({size_mb} МБ). Максимальный размер: 25 МБ.",
+
+        # ── Task type prompts & errors (task_types.py) ──
+        "ask_number": "Введите числовое значение:",
+        "ask_temperature": "Введите температуру (°C):",
+        "ask_text": "Введите ответ:",
+        "ask_yes_no": "Выберите вариант:",
+        "invalid_number": "Пожалуйста, введите корректное число (например: 42 или 3,5).",
+        "invalid_temperature": "Пожалуйста, введите корректную температуру от -50 до 200 °C.",
+        "yes_btn": "Да",
+        "no_btn": "Нет",
 
         # ── Bot command descriptions ──
         "cmd_start_desc": "Начать / привязать аккаунт",
@@ -143,15 +153,26 @@ STRINGS: dict[str, dict[str, str]] = {
             "/today buyrug'ini yuboring."
         ),
         "all_items_done": "Barcha bandlar bajarilgan. Rasm biriktirilmadi.",
-        "photo_confirm": "Rasmni bandga biriktirish?\n\n\ud83d\udccb {template} \u2192 \u00ab{item}\u00bb",
-        "photo_confirm_short": "Rasmni bandga biriktirish?\n\n\ud83d\udccb \u2192 \u00ab{item}\u00bb",
+        "photo_confirm": "Rasmni bandga biriktirish?\n\n📋 {template} → «{item}»",
+        "photo_confirm_short": "Rasmni bandga biriktirish?\n\n📋 → «{item}»",
         "pick_checklist": "Bir nechta faol chek-ro'yxat bor. Qaysi biriga rasm biriktirish?",
         "no_pending_items": "Tanlangan chek-ro'yxatda bajarilmagan bandlar yo'q. Rasm biriktirilmadi.",
         "photo_save_error": "Rasmni saqlashda xato: {detail}",
-        "photo_attached": "Rasm \u00ab{item}\u00bb bandiga biriktirildi ✅",
+        "photo_attached": "Rasm «{item}» bandiga biriktirildi ✅",
         "photo_cancelled": "Rasm bekor qilindi. Davom etish uchun /today yuboring.",
         "detect_checklist_error": "Chek-ro'yxatni aniqlab bo'lmadi: {detail}",
         "photo_too_large": "Rasm juda katta ({size_mb}\u00a0MB). Maksimal hajm: 25\u00a0MB.",
+
+        # ── Task type prompts & errors ──
+        "ask_number": "Raqamli qiymat kiriting:",
+        "ask_temperature": "Haroratni kiriting (\u00b0C):",
+        "ask_text": "Javob yozing:",
+        "ask_yes_no": "Variantni tanlang:",
+        "invalid_number": "Iltimos, to'g'ri raqam kiriting (masalan: 42 yoki 3,5).",
+        "invalid_temperature": "Iltimos, -50 dan 200 \u00b0C gacha harorat kiriting.",
+        "yes_btn": "Ha",
+        "no_btn": "Yo'q",
+
         "cmd_start_desc": "Boshlash / hisobni bog'lash",
         "cmd_today_desc": "Bugungi chek-ro'yxatlar",
     },
@@ -181,7 +202,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "link_error": "Could not link account: {detail}",
         "step_header": "Step {current}/{total}",
         "standard_label": "Standard: {title}",
-        "optional_item": "(optional — can be skipped)",
+        "optional_item": "(optional \u2014 can be skipped)",
         "checklist_done": (
             "🎉 All required items completed!\n"
             "The manager can close the checklist in the web panel."
@@ -206,8 +227,8 @@ STRINGS: dict[str, dict[str, str]] = {
             "Send /today to see the list."
         ),
         "all_items_done": "All items completed. Photo not attached.",
-        "photo_confirm": "Attach photo to this item?\n\n\ud83d\udccb {template} \u2192 \u00ab{item}\u00bb",
-        "photo_confirm_short": "Attach photo to this item?\n\n\ud83d\udccb \u2192 \u00ab{item}\u00bb",
+        "photo_confirm": "Attach photo to this item?\n\n📋 {template} \u2192 \u00ab{item}\u00bb",
+        "photo_confirm_short": "Attach photo to this item?\n\n📋 \u2192 \u00ab{item}\u00bb",
         "pick_checklist": "You have several active checklists. Which one should the photo go to?",
         "no_pending_items": "The selected checklist has no pending items. Photo not attached.",
         "photo_save_error": "Could not save photo: {detail}",
@@ -215,6 +236,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "photo_cancelled": "Photo cancelled. Send /today to continue.",
         "detect_checklist_error": "Could not detect checklist: {detail}",
         "photo_too_large": "Photo is too large ({size_mb}\u00a0MB). Maximum size: 25\u00a0MB.",
+
+        # ── Task type prompts & errors ──
+        "ask_number": "Enter a numeric value:",
+        "ask_temperature": "Enter temperature (\u00b0C):",
+        "ask_text": "Type your answer:",
+        "ask_yes_no": "Select an option:",
+        "invalid_number": "Please enter a valid number (e.g. 42 or 3.5).",
+        "invalid_temperature": "Please enter a valid temperature between -50 and 200 \u00b0C.",
+        "yes_btn": "Yes",
+        "no_btn": "No",
+
         "cmd_start_desc": "Start / link account",
         "cmd_today_desc": "Today's checklists",
     },
