@@ -2,7 +2,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
-# ── Template schemas ────────────────────────────────────────────────────────
+# ── Template schemas ────────────────────────────────────────────────────────────
 
 class TemplateItemCreate(BaseModel):
     title: str
@@ -17,6 +17,9 @@ class TemplateItemCreate(BaseModel):
     # Confirmation requirements
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot.
+    # Supported: checkbox | number | temperature | text | photo | photo_geo | yes_no
+    task_type: str = "checkbox"
 
 
 class TemplateItemOut(TemplateItemCreate):
@@ -53,7 +56,7 @@ class TemplateDetail(TemplateListItem):
     items: list[TemplateItemOut]
 
 
-# ── Checklist schemas ────────────────────────────────────────────────────────
+# ── Checklist schemas ────────────────────────────────────────────────────────────
 
 class ChecklistCreate(BaseModel):
     template_id: int
@@ -91,6 +94,8 @@ class ChecklistItemOut(BaseModel):
     # Confirmation requirements (visible to frontend and bot)
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot
+    task_type: str = "checkbox"
 
 
 class ChecklistOut(BaseModel):
@@ -142,3 +147,22 @@ class CurrentItemOut(BaseModel):
     # Confirmation requirements — bot uses these to know what to prompt for
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot
+    task_type: str = "checkbox"
+
+
+# Returned by GET /checklists/photos
+# One row per uploaded photo, enriched with checklist/item/branch context.
+class PhotoListItem(BaseModel):
+    id: int
+    checklist_id: int
+    checklist_name: str
+    item_id: int
+    item_title: str
+    branch_id: int
+    branch_name: str
+    shift: str
+    date: str
+    uploaded_by_name: str
+    url: str
+    created_at: datetime

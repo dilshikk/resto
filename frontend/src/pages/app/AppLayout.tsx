@@ -16,12 +16,14 @@ import {
   LogOut,
   CalendarDays,
   BookOpen,
+  Camera,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { to: "/app", label: "Дашборд", icon: LayoutDashboard, minLevel: 1 },
   { to: "/app/checklists", label: "Чек-листы", icon: ClipboardList, minLevel: 0 },
   { to: "/app/issues", label: "Проблемы", icon: AlertTriangle, minLevel: 1 },
+  { to: "/app/photos", label: "Фотоотчёты", icon: Camera, minLevel: 0 },
   { to: "/app/employees", label: "Сотрудники", icon: Users, minLevel: 1 },
   { to: "/app/shifts", label: "Смены", icon: CalendarDays, minLevel: 1 },
   { to: "/app/branches", label: "Филиалы", icon: Building2, minLevel: 2 },

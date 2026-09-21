@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from app.config import BOT_TOKEN
-from app.handlers import checklists, link
+from app.handlers import checklists, link, task_types
 from app.i18n import STRINGS
 
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +27,12 @@ async def main() -> None:
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
 
+    # Register routers in priority order.
+    # task_types router must come BEFORE checklists so that its FSM state
+    # handlers (waiting_for_number_input, waiting_for_temperature_input, etc.)
+    # take precedence over the generic message handler in checklists.router.
     dp.include_router(link.router)
+    dp.include_router(task_types.router)
     dp.include_router(checklists.router)
 
     # Register localised command menus so each user sees their own language

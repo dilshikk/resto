@@ -43,6 +43,7 @@ async def _show_current_item_or_finish(
     checklist_id: int,
     lang: str,
 ) -> None:
+    """Show current item with the standard checkbox keyboard (no task_type routing)."""
     message = target.message if isinstance(target, CallbackQuery) else target
     item = await api_client.get_current_item(telegram_id, checklist_id, lang)
     if item is None:
@@ -55,6 +56,84 @@ async def _show_current_item_or_finish(
         _item_text(item, lang),
         reply_markup=item_keyboard(checklist_id, item["id"], is_required=item["is_required"], lang=lang),
     )
+
+
+async def _advance_checklist(
+    message: Message,
+    checklist_id: int,
+    telegram_id: int,
+    lang: str,
+    state: FSMContext,
+) -> None:
+    """
+    Fetch the next pending item and either:
+    - Show it with the standard inline keyboard  (task_type == 'checkbox')
+    - Delegate to the matching task-type prompt  (all other types)
+    - Send the "all done" message                (no items left)
+
+    This is the single routing point called after every completed or skipped
+    item.  checklists.py and task_types.py both call this function; the
+    import from task_types is deferred inside the function body to break the
+    circular dependency.
+    """
+    item = await api_client.get_current_item(telegram_id, checklist_id, lang)
+    if item is None:
+        await message.answer(
+            t("checklist_done", lang),
+            reply_markup=back_to_list_keyboard(lang),
+        )
+        return
+
+    task_type: str = item.get("task_type", "checkbox")
+
+    if task_type == "checkbox":
+        await message.answer(
+            _item_text(item, lang),
+            reply_markup=item_keyboard(
+                checklist_id, item["id"],
+                is_required=item["is_required"],
+                lang=lang,
+            ),
+        )
+        return
+
+    # Show item title/description before the prompt so the employee knows
+    # what they are answering.
+    await message.answer(_item_text(item, lang))
+
+    # Deferred import to avoid circular dependency with task_types.py
+    from app.handlers.task_types import (
+        prompt_number,
+        prompt_photo,
+        prompt_photo_geo,
+        prompt_temperature,
+        prompt_text,
+        prompt_yes_no,
+    )
+
+    dispatch = {
+        "number": prompt_number,
+        "temperature": prompt_temperature,
+        "text": prompt_text,
+        "yes_no": prompt_yes_no,
+        "photo": prompt_photo,
+        "photo_geo": prompt_photo_geo,
+    }
+    prompt_fn = dispatch.get(task_type)
+    if prompt_fn is None:
+        # Unknown task_type: fall back to checkbox keyboard so the employee
+        # is never left without a way to proceed.
+        await message.answer(
+            _item_text(item, lang),
+            reply_markup=item_keyboard(
+                checklist_id, item["id"],
+                is_required=item["is_required"],
+                lang=lang,
+            ),
+        )
+        return
+
+    await prompt_fn(message, state, checklist_id, item["id"], lang)
 
 
 async def _download_photo(bot, file_id: str, lang: str, message: Message) -> bytes | None:  # noqa: ANN001
@@ -103,15 +182,15 @@ async def back_to_checklists(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("cl:"))
-async def open_checklist(callback: CallbackQuery) -> None:
+async def open_checklist(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     lang = await api_client.get_employee_lang(callback.from_user.id)
     checklist_id = int(callback.data.split(":")[1])
-    await _show_current_item_or_finish(callback, callback.from_user.id, checklist_id, lang)
+    await _advance_checklist(callback.message, checklist_id, callback.from_user.id, lang, state)
 
 
 @router.callback_query(F.data.startswith("done:"))
-async def mark_done(callback: CallbackQuery) -> None:
+async def mark_done(callback: CallbackQuery, state: FSMContext) -> None:
     lang = await api_client.get_employee_lang(callback.from_user.id)
     _, checklist_id, item_id = callback.data.split(":")
     try:
@@ -120,11 +199,11 @@ async def mark_done(callback: CallbackQuery) -> None:
         await callback.answer(e.detail, show_alert=True)
         return
     await callback.answer(t("item_done", lang))
-    await _show_current_item_or_finish(callback, callback.from_user.id, int(checklist_id), lang)
+    await _advance_checklist(callback.message, int(checklist_id), callback.from_user.id, lang, state)
 
 
 @router.callback_query(F.data.startswith("skip:"))
-async def skip_item(callback: CallbackQuery) -> None:
+async def skip_item(callback: CallbackQuery, state: FSMContext) -> None:
     lang = await api_client.get_employee_lang(callback.from_user.id)
     _, checklist_id, item_id = callback.data.split(":")
     try:
@@ -133,7 +212,7 @@ async def skip_item(callback: CallbackQuery) -> None:
         await callback.answer(e.detail, show_alert=True)
         return
     await callback.answer(t("item_skipped", lang))
-    await _show_current_item_or_finish(callback, callback.from_user.id, int(checklist_id), lang)
+    await _advance_checklist(callback.message, int(checklist_id), callback.from_user.id, lang, state)
 
 
 @router.callback_query(F.data.startswith("problem:"))
@@ -160,7 +239,7 @@ async def receive_problem_comment(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(t("problem_saved", lang))
-    await _show_current_item_or_finish(message, message.from_user.id, checklist_id, lang)
+    await _advance_checklist(message, checklist_id, message.from_user.id, lang, state)
 
 
 @router.message(ItemStates.waiting_for_problem_comment, F.photo)
@@ -187,7 +266,7 @@ async def receive_problem_photo(message: Message, state: FSMContext, bot) -> Non
         return
     await state.clear()
     await message.answer(t("photo_problem_saved", lang))
-    await _show_current_item_or_finish(message, message.from_user.id, checklist_id, lang)
+    await _advance_checklist(message, checklist_id, message.from_user.id, lang, state)
 
 
 # ── Standalone photo — safe two-step flow ─────────────────────────────────────────────

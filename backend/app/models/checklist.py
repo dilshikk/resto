@@ -46,6 +46,9 @@ class ChecklistTemplateItem(Base):
     # Confirmation requirements — enforced at item-completion time.
     requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # How the employee should complete this item in the Telegram bot.
+    # Supported: checkbox | number | temperature | text | photo | photo_geo | yes_no
+    task_type: Mapped[str] = mapped_column(String(20), nullable=False, default="checkbox")
 
 
 class Checklist(Base):
@@ -96,3 +99,7 @@ class ChecklistItem(Base):
     standard_code: Mapped[str | None] = mapped_column(ForeignKey("standards.code"), nullable=True)
     requires_photo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     requires_comment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # How the employee should complete this item in the Telegram bot.
+    # Denormalized from the template item at checklist-creation time.
+    # Supported: checkbox | number | temperature | text | photo | photo_geo | yes_no
+    task_type: Mapped[str] = mapped_column(String(20), nullable=False, default="checkbox")

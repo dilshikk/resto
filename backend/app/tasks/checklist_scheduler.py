@@ -22,7 +22,7 @@ Template → Branch assignment rules
 Date per branch
 ───────────────
 Each branch stores a `timezone` string (e.g. "Asia/Tashkent").  The
-scheduler converts UTC “now” to the branch-local date so that a branch
+scheduler converts UTC "now" to the branch-local date so that a branch
 in UTC+5 gets its checklists generated for *its* local tomorrow (which
 is still UTC today at 01:00 UTC).
 
@@ -177,12 +177,19 @@ async def _create_checklist(
             ChecklistItem(
                 checklist_id=cl.id,
                 title=ti.title,
+                title_uz=ti.title_uz,
+                title_en=ti.title_en,
                 description=ti.description,
+                description_uz=ti.description_uz,
+                description_en=ti.description_en,
                 sort_order=ti.sort_order,
                 is_required=ti.is_required,
                 standard_code=ti.standard_code,
                 requires_photo=ti.requires_photo,
                 requires_comment=ti.requires_comment,
+                # Denormalize task_type from the template item so the bot
+                # knows how to prompt the employee without re-fetching templates.
+                task_type=ti.task_type,
             )
         )
 
@@ -232,11 +239,6 @@ async def auto_generate_daily_checklists() -> dict[str, int]:
         for branch in branches:
             today_str = _local_date_str(branch.timezone)
 
-            # Compute the templates that actually apply to this branch *before*
-            # the manager check so that no_manager reflects the real work that
-            # would have been done.  The old code used len(templates) here,
-            # which included templates scoped to other branches and inflated the
-            # metric for every branch that has no manager.
             applicable = _applicable_templates(templates, branch.id)
             if not applicable:
                 continue
