@@ -17,6 +17,9 @@ class TemplateItemCreate(BaseModel):
     # Confirmation requirements
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot.
+    # Supported: checkbox | number | temperature | text | photo | photo_geo | yes_no
+    task_type: str = "checkbox"
 
 
 class TemplateItemOut(TemplateItemCreate):
@@ -91,6 +94,8 @@ class ChecklistItemOut(BaseModel):
     # Confirmation requirements (visible to frontend and bot)
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot
+    task_type: str = "checkbox"
 
 
 class ChecklistOut(BaseModel):
@@ -142,3 +147,5 @@ class CurrentItemOut(BaseModel):
     # Confirmation requirements — bot uses these to know what to prompt for
     requires_photo: bool = False
     requires_comment: bool = False
+    # How the employee completes this item in the Telegram bot
+    task_type: str = "checkbox"
