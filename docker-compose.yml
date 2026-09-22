@@ -33,6 +33,7 @@ services:
       - ./backend/migrations/016_i18n.sql:/docker-entrypoint-initdb.d/016_i18n.sql
       - ./backend/migrations/017_task_types.sql:/docker-entrypoint-initdb.d/017_task_types.sql
       - ./backend/migrations/018_roles_branches_bot_token.sql:/docker-entrypoint-initdb.d/018_roles_branches_bot_token.sql
+      - ./backend/migrations/019_template_role_ids.sql:/docker-entrypoint-initdb.d/019_template_role_ids.sql
     ports:
       - "5433:5432"
     healthcheck:
