@@ -30,6 +30,7 @@ from app.schemas.bot import (
     BotEmployeeOut,
     BotLinkRequest,
     BotLinkResponse,
+    BotResyncRequest,
     BotSkipRequest,
     BotToggleRequest,
 )
@@ -125,6 +126,17 @@ async def _to_bot_employee_out(emp: Employee, db: AsyncSession) -> BotEmployeeOu
     )
 
 
+def _issue_session_token(emp: Employee) -> str:
+    """
+    Mint a brand-new per-employee bot session token for *emp*, store only
+    its hash, and return the plaintext (caller must return it to the bot
+    exactly once). Invalidates any previously issued token for this employee.
+    """
+    plaintext_token = secrets.token_urlsafe(32)
+    emp.bot_session_token_hash = _hash_bot_token(plaintext_token)
+    return plaintext_token
+
+
 # ── Link endpoint (no per-employee token yet) ──────────────────────────────────────
 
 @router.post("/link", response_model=BotLinkResponse)
@@ -156,9 +168,8 @@ async def link_telegram_account(
 
     # Issue a per-employee bot session token.  Only the hash is stored;
     # the plaintext is returned once and never logged.
-    plaintext_token = secrets.token_urlsafe(32)
+    plaintext_token = _issue_session_token(target)
     target.telegram_id = body.telegram_id
-    target.bot_session_token_hash = _hash_bot_token(plaintext_token)
 
     await log_action(
         db,
@@ -174,6 +185,57 @@ async def link_telegram_account(
     await db.refresh(target)
 
     out = await _to_bot_employee_out(target, db)
+    return BotLinkResponse(
+        **out.model_dump(),
+        bot_session_token=plaintext_token,
+    )
+
+
+# ── Resync endpoint (recovers a lost session token, no invite code needed) ──────────
+
+@router.post("/resync", response_model=BotLinkResponse)
+async def resync_telegram_account(
+    body: BotResyncRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Called by the bot whenever it has no cached session token for a
+    telegram_id (typically right after the bot process restarts, since the
+    token cache lives only in memory).
+
+    Telegram itself already authenticates the caller as this telegram_id,
+    so if an employee profile is already linked to it we can safely mint a
+    fresh session token here — no invite code required. This is what makes
+    a bot restart recoverable: without it, employees.telegram_id being
+    already set makes /bot/link permanently reject them with 409, while the
+    old token is unrecoverable (only its hash is stored).
+
+    404 is returned only when this telegram_id has genuinely never been
+    linked, in which case the bot should fall back to asking for an invite
+    code.
+    """
+    emp = (
+        await db.execute(select(Employee).where(Employee.telegram_id == body.telegram_id))
+    ).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="\u041f\u0440\u043e\u0444\u0438\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u0438\u043b\u0438 \u043d\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d")
+    if emp.status != "active":
+        raise HTTPException(status_code=403, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0434\u0435\u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d")
+
+    plaintext_token = _issue_session_token(emp)
+
+    await log_action(
+        db,
+        actor_id=emp.id,
+        action="employee.bot_session_resynced",
+        entity_type="employee",
+        entity_id=emp.id,
+        metadata={"employee_id": emp.id},
+    )
+    await db.commit()
+    await db.refresh(emp)
+
+    out = await _to_bot_employee_out(emp, db)
     return BotLinkResponse(
         **out.model_dump(),
         bot_session_token=plaintext_token,
