@@ -5,14 +5,16 @@ import {
   listTemplates,
   getTemplate,
   createTemplate,
+  updateTemplate,
   deactivateTemplate,
   addTemplateItem,
   removeTemplateItem,
 } from "@/api/checklists.ts";
-import type { ChecklistTemplate, TemplateCreate } from "@/api/checklists.ts";
+import type { ChecklistTemplate, TemplateCreate, TaskType } from "@/api/checklists.ts";
 import { listBranches } from "@/api/branches.ts";
 import { listStandards } from "@/api/standards.ts";
-import { ClipboardList, Plus, Trash2, ChevronRight, Camera, MessageSquare } from "lucide-react";
+import { listRoles } from "@/api/employees.ts";
+import { ClipboardList, Plus, Trash2, ChevronRight, Camera, MessageSquare, Users } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
 const CATEGORIES = [
@@ -25,8 +27,68 @@ const CATEGORIES = [
   { value: "service", label: "Сервис" },
 ];
 
+const TASK_TYPES: { value: TaskType; label: string; hint: string }[] = [
+  { value: "checkbox", label: "Галочка", hint: "Просто отметить выполненным" },
+  { value: "number", label: "Число", hint: "Сотрудник вводит число" },
+  { value: "temperature", label: "Температура", hint: "Сотрудник вводит температуру" },
+  { value: "photo", label: "Фото", hint: "Сотрудник прикладывает фото как ответ" },
+  { value: "yes_no", label: "Да / Нет", hint: "Сотрудник выбирает да или нет" },
+  { value: "text", label: "Текст", hint: "Сотрудник вводит текстовый ответ" },
+];
+
 function catLabel(val: string) {
   return CATEGORIES.find((c) => c.value === val)?.label ?? val;
+}
+
+// ── Role multi-select (shared by create + edit) ────────────────────────────
+
+function RoleMultiSelect({
+  selected,
+  onChange,
+}: {
+  selected: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const { data: roles } = useQuery({ queryKey: ["roles"], queryFn: listRoles });
+
+  const toggle = (roleId: number) => {
+    onChange(selected.includes(roleId) ? selected.filter((id) => id !== roleId) : [...selected, roleId]);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <label className="text-sm font-medium flex items-center gap-1.5">
+        <Users className="size-3.5 text-muted-foreground" />
+        Должности
+      </label>
+      <p className="text-xs text-muted-foreground">
+        Кто увидит этот чек-лист. Если ничего не выбрано — увидят все должности.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {roles?.map((role) => {
+          const active = selected.includes(role.id);
+          return (
+            <button
+              key={role.id}
+              type="button"
+              onClick={() => toggle(role.id)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                active
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "hover:bg-muted",
+              )}
+            >
+              {role.name_ru}
+            </button>
+          );
+        })}
+        {!roles?.length && (
+          <p className="text-xs text-muted-foreground">Нет настроенных должностей</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ── Create Template Modal ─────────────────────────────────────────────────
@@ -45,6 +107,7 @@ function CreateTemplateModal({
     description: "",
     category: "general",
     branch_id: undefined,
+    role_ids: [],
   });
 
   const mut = useMutation({
@@ -65,7 +128,7 @@ function CreateTemplateModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-md rounded-2xl border bg-card shadow-xl">
+      <div className="w-full max-w-md rounded-2xl border bg-card shadow-xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-lg font-semibold">Новый шаблон</h2>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
@@ -121,6 +184,12 @@ function CreateTemplateModal({
               </select>
             </div>
           </div>
+
+          <RoleMultiSelect
+            selected={form.role_ids ?? []}
+            onChange={(role_ids) => setForm((f) => ({ ...f, role_ids }))}
+          />
+
           <div className="flex gap-2 justify-end pt-2">
             <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
             <button
@@ -151,6 +220,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
   const [requiresPhoto, setRequiresPhoto] = useState(false);
   const [requiresComment, setRequiresComment] = useState(false);
   const [standardCode, setStandardCode] = useState("");
+  const [taskType, setTaskType] = useState<TaskType>("checkbox");
 
   const mut = useMutation({
     mutationFn: () =>
@@ -160,6 +230,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
         requires_photo: requiresPhoto,
         requires_comment: requiresComment,
         standard_code: standardCode || undefined,
+        task_type: taskType,
       }),
     onSuccess: () => {
       toast.success("Пункт добавлен");
@@ -171,7 +242,7 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
+      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-lg font-semibold">Добавить пункт</h2>
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
@@ -190,6 +261,23 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
               required
               autoFocus
             />
+          </div>
+
+          {/* Task type */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Тип задачи</label>
+            <select
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              value={taskType}
+              onChange={(e) => setTaskType(e.target.value as TaskType)}
+            >
+              {TASK_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {TASK_TYPES.find((t) => t.value === taskType)?.hint}
+            </p>
           </div>
 
           {/* Standard code */}
@@ -276,6 +364,63 @@ function AddItemModal({ templateId, onClose }: { templateId: number; onClose: ()
   );
 }
 
+// ── Edit Roles Modal ────────────────────────────────────────────────────────
+
+function EditRolesModal({
+  template,
+  onClose,
+}: {
+  template: ChecklistTemplate;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [roleIds, setRoleIds] = useState<number[]>(template.role_ids ?? []);
+
+  const mut = useMutation({
+    mutationFn: () =>
+      updateTemplate(template.id, {
+        name: template.name,
+        description: template.description,
+        category: template.category,
+        branch_id: template.branch_id,
+        deadline_offset_minutes: template.deadline_offset_minutes,
+        role_ids: roleIds,
+      }),
+    onSuccess: () => {
+      toast.success("Должности обновлены");
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template", template.id] });
+      onClose();
+    },
+    onError: () => toast.error("Не удалось обновить должности"),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h2 className="text-lg font-semibold">Должности</h2>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
+        </div>
+        <div className="space-y-4 p-5">
+          <RoleMultiSelect selected={roleIds} onChange={setRoleIds} />
+          <div className="flex gap-2 justify-end pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
+            <button
+              type="button"
+              onClick={() => mut.mutate()}
+              disabled={mut.isPending}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {mut.isPending ? "Сохраняем..." : "Сохранить"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Template Detail Panel ─────────────────────────────────────────────────
 
 function TemplateDetailPanel({
@@ -287,6 +432,7 @@ function TemplateDetailPanel({
 }) {
   const qc = useQueryClient();
   const [addItemOpen, setAddItemOpen] = useState(false);
+  const [editRolesOpen, setEditRolesOpen] = useState(false);
 
   const { data: detail, isLoading } = useQuery({
     queryKey: ["template", templateId],
@@ -339,6 +485,14 @@ function TemplateDetailPanel({
                 {detail.branch_name}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setEditRolesOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed px-2.5 py-0.5 text-xs font-medium text-muted-foreground hover:border-primary hover:text-primary"
+            >
+              <Users className="size-3" />
+              {detail.role_names?.length ? detail.role_names.join(", ") : "Все должности"}
+            </button>
           </div>
         </div>
         <button
@@ -384,6 +538,9 @@ function TemplateDetailPanel({
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{item.title}</p>
                   <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                    <span className="text-xs text-muted-foreground">
+                      {TASK_TYPES.find((t) => t.value === item.task_type)?.label ?? "Галочка"}
+                    </span>
                     {!item.is_required && (
                       <span className="text-xs text-muted-foreground">Необязательный</span>
                     )}
@@ -420,6 +577,9 @@ function TemplateDetailPanel({
 
       {addItemOpen && (
         <AddItemModal templateId={templateId} onClose={() => setAddItemOpen(false)} />
+      )}
+      {editRolesOpen && (
+        <EditRolesModal template={detail} onClose={() => setEditRolesOpen(false)} />
       )}
     </div>
   );
@@ -519,6 +679,7 @@ export default function TemplatesPage() {
                     )}
                   >
                     {catLabel(tpl.category)} · {tpl.item_count} пунктов
+                    {tpl.role_names?.length ? ` · ${tpl.role_names.join(", ")}` : ""}
                   </p>
                 </button>
               ))}
