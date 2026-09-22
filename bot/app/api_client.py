@@ -4,13 +4,17 @@ Authentication model
 --------------------
 Every request carries two credentials:
   X-Bot-Secret            -- proves the request comes from *our* bot service
-  X-Bot-Employee-Token    -- per-employee token issued by POST /bot/link
-                             (required on all endpoints except /bot/link itself)
+  X-Bot-Employee-Token    -- per-employee token issued by POST /bot/link or
+                             POST /bot/resync (required on all endpoints
+                             except /bot/link and /bot/resync themselves)
 
 The plaintext token is stored in-memory keyed by telegram_id.  On bot
-restart the cache is empty; the first command that needs an employee token
-calls _ensure_token() which raises ApiError(401) if the employee hasn't
-linked yet (asking them to /start again).
+restart the cache is empty. Rather than dead-ending the employee, the first
+command that needs an employee token calls _ensure_token(), which -- on a
+cache miss -- transparently calls POST /bot/resync to mint a fresh token for
+an already-linked telegram_id (no invite code needed, since Telegram itself
+already authenticates the caller). Only a genuinely never-linked telegram_id
+(resync returns 404) falls through to asking for an invite code.
 """
 from typing import Any
 
@@ -23,7 +27,8 @@ _BASE_HEADERS = {"X-Bot-Secret": BOT_INTERNAL_SECRET}
 
 # In-memory caches keyed by telegram_id.
 # Both are populated when an employee links their account or on first
-# successful /bot/me call.  Both are lost on bot restart.
+# successful /bot/me call.  Both are lost on bot restart -- _ensure_token()
+# is what makes that loss recoverable instead of a dead end.
 _lang_cache: dict[int, str] = {}           # telegram_id -> "ru"|"uz"|"en"
 _token_cache: dict[int, str] = {}          # telegram_id -> bot_session_token
 
@@ -43,25 +48,36 @@ def set_lang_cache(telegram_id: int, lang: str) -> None:
 
 
 def set_token_cache(telegram_id: int, token: str) -> None:
-    """Store the per-employee bot session token issued by POST /bot/link."""
+    """Store the per-employee bot session token issued by /bot/link or /bot/resync."""
     _token_cache[telegram_id] = token
 
 
-def _get_employee_headers(telegram_id: int) -> dict[str, str]:
+async def _ensure_token(telegram_id: int) -> str:
     """
-    Return headers for an employee-scoped request.
-    Raises ApiError(401) if no token is cached for this telegram_id yet
-    (employee must /start again after a bot restart).
+    Return a valid session token for *telegram_id*, resyncing with the
+    backend on a cache miss (e.g. right after a bot restart).
+
+    Raises ApiError(404) only when the backend confirms this telegram_id has
+    never been linked to an employee -- the only case where asking for an
+    invite code is actually correct.
     """
     token = _token_cache.get(telegram_id)
-    if not token:
-        raise ApiError(
-            401,
-            "\u0421\u0435\u0441\u0441\u0438\u044f \u0431\u043e\u0442\u0430 \u0438\u0441\u0442\u0435\u043a\u043b\u0430. "
-            "\u041f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430, "
-            "\u043e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 /start \u0434\u043b\u044f "
-            "\u043f\u043e\u0432\u0442\u043e\u0440\u043d\u043e\u0439 \u0430\u0443\u0442\u0435\u043d\u0442\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u0438.",
-        )
+    if token:
+        return token
+
+    result = await resync_account(telegram_id)
+    fresh_token: str = result.get("bot_session_token", "")
+    if not fresh_token:
+        # Should not happen if the backend call succeeded, but guard anyway.
+        raise ApiError(401, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0441\u0435\u0441\u0441\u0438\u044e.")
+    set_token_cache(telegram_id, fresh_token)
+    emp_lang = result.get("preferred_language")
+    if emp_lang:
+        set_lang_cache(telegram_id, emp_lang)
+    return fresh_token
+
+
+def _get_employee_headers(token: str) -> dict[str, str]:
     return {**_BASE_HEADERS, "X-Bot-Employee-Token": token}
 
 
@@ -72,11 +88,12 @@ def _base_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=BACKEND_URL, headers=_BASE_HEADERS, timeout=15.0)
 
 
-def _emp_client(telegram_id: int) -> httpx.AsyncClient:
-    """Client with both bot secret and per-employee token."""
+async def _emp_client(telegram_id: int) -> httpx.AsyncClient:
+    """Client with both bot secret and per-employee token, resyncing first if needed."""
+    token = await _ensure_token(telegram_id)
     return httpx.AsyncClient(
         base_url=BACKEND_URL,
-        headers=_get_employee_headers(telegram_id),
+        headers=_get_employee_headers(token),
         timeout=15.0,
     )
 
@@ -124,16 +141,32 @@ async def link_account(telegram_id: int, invite_code: str) -> dict[str, Any]:
         return await _handle(resp)
 
 
+async def resync_account(telegram_id: int) -> dict[str, Any]:
+    """
+    POST /bot/resync — silently re-issue a session token for a telegram_id
+    that is already linked to an employee (no invite code required).
+
+    This is what recovers employees after a bot restart wipes the in-memory
+    _token_cache: the old /bot/link flow would otherwise reject them with
+    409 "Telegram already linked" forever, since employees.telegram_id stays
+    set in the database. Raises ApiError(404) if this telegram_id was never
+    linked -- callers should fall back to the invite-code flow in that case.
+    """
+    async with _base_client() as c:
+        resp = await c.post("/bot/resync", json={"telegram_id": telegram_id})
+        return await _handle(resp)
+
+
 # ---- Employee-scoped endpoints (require X-Bot-Employee-Token) ----------------
 
 async def get_me(telegram_id: int) -> dict[str, Any]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.get("/bot/me")
         return await _handle(resp)
 
 
 async def list_checklists_today(telegram_id: int) -> list[dict[str, Any]]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.get("/bot/checklists/today")
         return await _handle(resp)
 
@@ -141,7 +174,7 @@ async def list_checklists_today(telegram_id: int) -> list[dict[str, Any]]:
 async def get_current_item(
     telegram_id: int, checklist_id: int, lang: str = "ru"
 ) -> dict[str, Any] | None:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.get(
             f"/bot/checklists/{checklist_id}/current-item",
             params={"lang": lang},
@@ -150,7 +183,7 @@ async def get_current_item(
 
 
 async def get_item(telegram_id: int, checklist_id: int, item_id: int) -> dict[str, Any]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.get(f"/bot/checklists/{checklist_id}/items/{item_id}")
         return await _handle(resp)
 
@@ -158,7 +191,7 @@ async def get_item(telegram_id: int, checklist_id: int, item_id: int) -> dict[st
 async def toggle_item(
     telegram_id: int, checklist_id: int, item_id: int, note: str | None = None
 ) -> dict[str, Any]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.post(
             f"/bot/checklists/{checklist_id}/items/{item_id}/toggle",
             json={"note": note},
@@ -169,7 +202,7 @@ async def toggle_item(
 async def skip_item(
     telegram_id: int, checklist_id: int, item_id: int, note: str | None = None
 ) -> dict[str, Any]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.post(
             f"/bot/checklists/{checklist_id}/items/{item_id}/skip",
             json={"note": note},
@@ -180,7 +213,7 @@ async def skip_item(
 async def upload_item_photo(
     telegram_id: int, checklist_id: int, item_id: int, file_bytes: bytes, filename: str
 ) -> dict[str, Any]:
-    async with _emp_client(telegram_id) as c:
+    async with await _emp_client(telegram_id) as c:
         resp = await c.post(
             f"/bot/checklists/{checklist_id}/items/{item_id}/photo",
             files={"file": (filename, file_bytes, "image/jpeg")},
