@@ -168,6 +168,10 @@ async def _create_checklist(
         started_at=now,
         due_at=due_at,
         created_by_employee_id=manager.id,
+        # Denormalize the template's role scoping, same as the manual
+        # POST /checklists flow, so auto-generated checklists are also
+        # filtered by employee position (waiter vs cook, etc).
+        role_ids=tpl.role_ids or [],
     )
     db.add(cl)
     await db.flush()  # populate cl.id
