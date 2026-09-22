@@ -36,6 +36,8 @@ class TemplateCreate(BaseModel):
     # Minutes after checklist creation until the deadline is due.
     # None means this template has no deadline.
     deadline_offset_minutes: int | None = None
+    # Which positions/roles this checklist is for. Empty = every role.
+    role_ids: list[int] = []
 
 
 class TemplateListItem(BaseModel):
@@ -49,6 +51,8 @@ class TemplateListItem(BaseModel):
     is_active: bool
     item_count: int
     deadline_offset_minutes: int | None = None
+    role_ids: list[int] = []
+    role_names: list[str] = []
     created_at: datetime
 
 
@@ -117,6 +121,8 @@ class ChecklistOut(BaseModel):
     completed_at: datetime | None = None
     # Computed status: ON_TIME | OVERDUE | NOT_COMPLETED | None
     deadline_status: str | None = None
+    # Which roles this checklist is for. Empty = every role.
+    role_ids: list[int] = []
 
 
 class ChecklistDetail(ChecklistOut):
