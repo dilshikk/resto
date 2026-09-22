@@ -1,4 +1,5 @@
 from sqlalchemy import BigInteger, String, Boolean, DateTime, ForeignKey, Integer, func
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 import datetime
@@ -18,6 +19,10 @@ class ChecklistTemplate(Base):
     # Optional deadline: minutes after checklist creation until the due_at is set.
     # None means this template has no deadline (deadline_status will always be None).
     deadline_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Which positions/roles this checklist applies to. Empty list = every role
+    # (backward-compatible default). Non-empty = only employees whose role_id
+    # is in this list see checklists generated from this template.
+    role_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -72,6 +77,10 @@ class Checklist(Base):
     overdue_supervisor_notified_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Denormalized copy of the template's role_ids at creation time (same
+    # pattern as template_name), so editing the template later never changes
+    # checklists already generated. Empty list = visible to every role.
+    role_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
 
 
 class ChecklistItem(Base):
