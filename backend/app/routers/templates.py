@@ -7,6 +7,7 @@ from app.database import get_db
 from app.models.branch import Branch
 from app.models.checklist import ChecklistTemplate, ChecklistTemplateItem
 from app.models.employee import Employee
+from app.models.role import Role
 from app.models.standard import Standard
 from app.schemas.checklist import (
     TemplateCreate,
@@ -49,10 +50,25 @@ async def _validate_standard_code(standard_code: str | None, db: AsyncSession) -
         raise HTTPException(status_code=404, detail="Стандарт с таким кодом не найден")
 
 
+async def _validate_role_ids(role_ids: list[int], db: AsyncSession) -> None:
+    if not role_ids:
+        return
+    found = (
+        await db.execute(select(Role.id).where(Role.id.in_(role_ids)))
+    ).scalars().all()
+    missing = set(role_ids) - set(found)
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Должность(и) не найдены: {', '.join(str(m) for m in missing)}",
+        )
+
+
 def _build_template_list_item(
     tpl: ChecklistTemplate,
     branch_name: str | None,
     item_count: int,
+    role_names: list[str],
 ) -> TemplateListItem:
     return TemplateListItem(
         id=tpl.id,
@@ -64,8 +80,21 @@ def _build_template_list_item(
         is_active=tpl.is_active,
         item_count=item_count,
         deadline_offset_minutes=tpl.deadline_offset_minutes,
+        role_ids=tpl.role_ids or [],
+        role_names=role_names,
         created_at=tpl.created_at,
     )
+
+
+async def _role_names_for(role_ids: list[int], db: AsyncSession) -> list[str]:
+    if not role_ids:
+        return []
+    roles = (
+        await db.execute(select(Role).where(Role.id.in_(role_ids)))
+    ).scalars().all()
+    by_id = {r.id: r.name_ru for r in roles}
+    # Preserve the template's own role_ids order where possible.
+    return [by_id[rid] for rid in role_ids if rid in by_id]
 
 
 @router.get("", response_model=list[TemplateListItem])
@@ -92,6 +121,16 @@ async def list_templates(
             ).scalars().all()
         }
 
+    all_role_ids = {rid for tpl in templates for rid in (tpl.role_ids or [])}
+    roles_map: dict[int, str] = {}
+    if all_role_ids:
+        roles_map = {
+            r.id: r.name_ru
+            for r in (
+                await db.execute(select(Role).where(Role.id.in_(all_role_ids)))
+            ).scalars().all()
+        }
+
     tpl_ids = [tpl.id for tpl in templates]
     counts_rows = (
         await db.execute(
@@ -110,6 +149,7 @@ async def list_templates(
             tpl,
             branches_map.get(tpl.branch_id) if tpl.branch_id else None,
             counts_map.get(tpl.id, 0),
+            [roles_map[rid] for rid in (tpl.role_ids or []) if rid in roles_map],
         )
         for tpl in templates
     ]
@@ -123,12 +163,14 @@ async def create_template(
 ):
     if not data.name.strip():
         raise HTTPException(status_code=400, detail="Название обязательно")
+    await _validate_role_ids(data.role_ids, db)
     tpl = ChecklistTemplate(
         name=data.name.strip(),
         description=data.description,
         category=data.category,
         branch_id=data.branch_id,
         deadline_offset_minutes=data.deadline_offset_minutes,
+        role_ids=data.role_ids,
         created_by_employee_id=current.id,
     )
     db.add(tpl)
@@ -140,7 +182,8 @@ async def create_template(
         b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
         branch_name = b.name if b else None
 
-    return _build_template_list_item(tpl, branch_name, 0)
+    role_names = await _role_names_for(tpl.role_ids or [], db)
+    return _build_template_list_item(tpl, branch_name, 0, role_names)
 
 
 @router.get("/{template_id}", response_model=TemplateDetail)
@@ -163,8 +206,9 @@ async def get_template(
         b = (await db.execute(select(Branch).where(Branch.id == tpl.branch_id))).scalar_one_or_none()
         branch_name = b.name if b else None
 
+    role_names = await _role_names_for(tpl.role_ids or [], db)
     return TemplateDetail(
-        **_build_template_list_item(tpl, branch_name, len(items)).model_dump(),
+        **_build_template_list_item(tpl, branch_name, len(items), role_names).model_dump(),
         items=[TemplateItemOut.model_validate(i) for i in items],
     )
 
@@ -177,11 +221,13 @@ async def update_template(
     db: AsyncSession = Depends(get_db),
 ):
     tpl = await _get_or_404(template_id, db)
+    await _validate_role_ids(data.role_ids, db)
     tpl.name = data.name.strip()
     tpl.description = data.description
     tpl.category = data.category
     tpl.branch_id = data.branch_id
     tpl.deadline_offset_minutes = data.deadline_offset_minutes
+    tpl.role_ids = data.role_ids
     await db.commit()
     await db.refresh(tpl)
 
@@ -196,7 +242,8 @@ async def update_template(
         )
     ).scalar_one()
 
-    return _build_template_list_item(tpl, branch_name, cnt)
+    role_names = await _role_names_for(tpl.role_ids or [], db)
+    return _build_template_list_item(tpl, branch_name, cnt, role_names)
 
 
 @router.delete("/{template_id}")
@@ -234,6 +281,7 @@ async def add_item(
         standard_code=data.standard_code,
         requires_photo=data.requires_photo,
         requires_comment=data.requires_comment,
+        task_type=data.task_type,
     )
     db.add(item)
     await db.commit()
@@ -272,6 +320,7 @@ async def update_item(
     item.standard_code = data.standard_code
     item.requires_photo = data.requires_photo
     item.requires_comment = data.requires_comment
+    item.task_type = data.task_type
 
     await db.commit()
     await db.refresh(item)
