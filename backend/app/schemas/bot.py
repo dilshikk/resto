@@ -8,6 +8,15 @@ class BotLinkRequest(BaseModel):
     invite_code: str
 
 
+class BotResyncRequest(BaseModel):
+    """
+    Body for POST /bot/resync — recovers a lost bot session token for a
+    telegram_id that is already linked to an employee, without requiring
+    the invite code again. See routers/bot.py for the full rationale.
+    """
+    telegram_id: int
+
+
 class BotEmployeeOut(BaseModel):
     id: int
     full_name: str
@@ -20,7 +29,7 @@ class BotEmployeeOut(BaseModel):
 
 
 class BotLinkResponse(BotEmployeeOut):
-    """Returned by POST /bot/link.
+    """Returned by POST /bot/link and POST /bot/resync.
 
     The bot MUST persist `bot_session_token` for this telegram_id and include
     it as `X-Bot-Employee-Token` on every subsequent per-employee request.
@@ -40,6 +49,7 @@ class BotSkipRequest(BaseModel):
 # Re-exported for convenience so bot router callers only need this module
 __all__ = [
     "BotLinkRequest",
+    "BotResyncRequest",
     "BotLinkResponse",
     "BotEmployeeOut",
     "BotToggleRequest",
