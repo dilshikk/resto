@@ -2,6 +2,8 @@ import { apiClient } from "./client.ts";
 
 // ── Template types ────────────────────────────────────────────────────────
 
+export type TaskType = "checkbox" | "number" | "temperature" | "photo" | "yes_no" | "text";
+
 export type ChecklistTemplateItem = {
   id: number;
   template_id: number;
@@ -12,6 +14,7 @@ export type ChecklistTemplateItem = {
   standard_code?: string;
   requires_photo: boolean;
   requires_comment: boolean;
+  task_type: TaskType;
 };
 
 export type ChecklistTemplate = {
@@ -25,6 +28,9 @@ export type ChecklistTemplate = {
   item_count: number;
   deadline_offset_minutes?: number | null;
   created_at: string;
+  /** Role ids this template is scoped to. Empty = visible to every position. */
+  role_ids: number[];
+  role_names: string[];
 };
 
 export type ChecklistTemplateDetail = ChecklistTemplate & {
@@ -37,6 +43,7 @@ export type TemplateCreate = {
   category: string;
   branch_id?: number;
   deadline_offset_minutes?: number | null;
+  role_ids?: number[];
 };
 
 // ── Checklist types ───────────────────────────────────────────────────────
@@ -67,6 +74,7 @@ export type ChecklistItem = {
   standard_title?: string;
   requires_photo: boolean;
   requires_comment: boolean;
+  task_type: TaskType;
 };
 
 export type Checklist = {
@@ -87,6 +95,8 @@ export type Checklist = {
   due_at?: string | null;
   completed_at?: string | null;
   deadline_status?: DeadlineStatus;
+  /** Role ids this checklist is scoped to (copied from its template). Empty = visible to everyone. */
+  role_ids: number[];
 };
 
 export type ChecklistDetail = Checklist & { items: ChecklistItem[] };
@@ -112,6 +122,7 @@ export type CurrentItem = {
   standard_title?: string;
   requires_photo: boolean;
   requires_comment: boolean;
+  task_type: TaskType;
 } | null;
 
 // ── Templates API ─────────────────────────────────────────────────────────
@@ -150,6 +161,7 @@ export async function addTemplateItem(
     standard_code?: string;
     requires_photo?: boolean;
     requires_comment?: boolean;
+    task_type?: TaskType;
   },
 ): Promise<ChecklistTemplateItem> {
   const res = await apiClient.post<ChecklistTemplateItem>(`/templates/${templateId}/items`, data);
@@ -167,6 +179,7 @@ export async function updateTemplateItem(
     standard_code?: string;
     requires_photo?: boolean;
     requires_comment?: boolean;
+    task_type?: TaskType;
   },
 ): Promise<ChecklistTemplateItem> {
   const res = await apiClient.patch<ChecklistTemplateItem>(`/templates/${templateId}/items/${itemId}`, data);
