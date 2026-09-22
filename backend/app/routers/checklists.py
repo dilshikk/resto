@@ -103,10 +103,29 @@ async def _allowed_branch_ids(current: Employee, db: AsyncSession) -> set[int] |
     return {current.primary_branch_id, *(current.additional_branch_ids or [])}
 
 
+def _visible_to_role(cl_role_ids: list[int], employee_role_id: int, is_manager: bool) -> bool:
+    """
+    A checklist with an empty role_ids list is visible to everyone.
+    A non-empty list restricts visibility to employees whose role_id is in
+    the list. Managers (permission_level >= 1) always see every checklist in
+    their branch so they can track and manage all positions.
+    """
+    if is_manager:
+        return True
+    if not cl_role_ids:
+        return True
+    return employee_role_id in cl_role_ids
+
+
 async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSession) -> None:
     allowed = await _allowed_branch_ids(current, db)
     if allowed is not None and cl.branch_id not in allowed:
         raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+
+    role = await _get_role(current, db)
+    is_manager = bool(role and role.permission_level >= 1)
+    if not _visible_to_role(cl.role_ids or [], current.role_id, is_manager):
+        raise HTTPException(status_code=403, detail="Этот чек-лист предназначен для другой должности")
 
 
 async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklist:
@@ -144,6 +163,7 @@ def _make_checklist_out(
         due_at=cl.due_at,
         completed_at=cl.completed_at,
         deadline_status=_compute_deadline_status(cl),
+        role_ids=cl.role_ids or [],
     )
 
 
@@ -373,6 +393,8 @@ async def list_checklists(
     db: AsyncSession = Depends(get_db),
 ):
     allowed = await _allowed_branch_ids(current, db)
+    role = await _get_role(current, db)
+    is_manager = bool(role and role.permission_level >= 1)
 
     # Branch scoping is applied in SQL, not after loading every checklist.
     query = select(Checklist)
@@ -387,6 +409,12 @@ async def list_checklists(
     query = query.order_by(Checklist.date.desc(), Checklist.id.desc())
 
     visible = (await db.execute(query)).scalars().all()
+    # Role scoping: managers see every position's checklists; staff only see
+    # checklists whose template has no role restriction or explicitly
+    # includes their own role.
+    if not is_manager:
+        visible = [cl for cl in visible if _visible_to_role(cl.role_ids or [], current.role_id, is_manager)]
+
     if not visible:
         return []
 
@@ -466,6 +494,10 @@ async def create_checklist(
         started_at=now,
         due_at=due_at,
         created_by_employee_id=current.id,
+        # Denormalize the template's role scoping at creation time, so
+        # editing the template later doesn't change already-generated
+        # checklists.
+        role_ids=tpl.role_ids or [],
     )
     db.add(cl)
     await db.flush()
@@ -827,14 +859,6 @@ async def complete_checklist(
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
-    role = await _get_role(current, db)
-    is_manager = bool(role and role.permission_level >= 1)
-    if not is_manager and cl.created_by_employee_id != current.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Вы можете завершить только свой чек-лист. Обратитесь к менеджеру.",
-        )
-
     items = await _get_ordered_items(checklist_id, db)
     pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
     if pending_required:
@@ -843,6 +867,9 @@ async def complete_checklist(
             status_code=400,
             detail=f"Нельзя завершить: не выполнены обязательные пункты: {titles}",
         )
+
+    role = await _get_role(current, db)
+    is_manager = bool(role and role.permission_level >= 1)
 
     now = datetime.now(timezone.utc)
     cl.status = "completed"
@@ -906,6 +933,10 @@ async def upload_item_photo(
     db.add(photo)
     await db.flush()
 
+    # An uploaded photo satisfies a requires_photo item, but does not itself
+    # mark the item complete — the employee (or bot) must still confirm via
+    # toggle. See _assert_completion_requirements, which checks for photo
+    # presence at toggle-time.
     await log_action(
         db, actor_id=current.id, action="photo.uploaded", entity_type="checklist_item", entity_id=item.id,
         metadata={"photo_id": photo.id},
