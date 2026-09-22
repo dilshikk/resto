@@ -89,14 +89,23 @@ def _compute_deadline_status(cl: Checklist) -> str | None:
 
 # ── Access guards ───────────────────────────────────────────────────────────
 
-async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSession) -> None:
-    role = (
-        await db.execute(select(Role).where(Role.id == current.role_id))
+async def _get_role(employee: Employee, db: AsyncSession) -> Role | None:
+    return (
+        await db.execute(select(Role).where(Role.id == employee.role_id))
     ).scalar_one_or_none()
+
+
+async def _allowed_branch_ids(current: Employee, db: AsyncSession) -> set[int] | None:
+    """Return the set of branch ids the employee may access, or None for all branches."""
+    role = await _get_role(current, db)
     if role and role.can_access_all_branches:
-        return
-    allowed = {current.primary_branch_id, *(current.additional_branch_ids or [])}
-    if cl.branch_id not in allowed:
+        return None
+    return {current.primary_branch_id, *(current.additional_branch_ids or [])}
+
+
+async def _assert_branch_access(cl: Checklist, current: Employee, db: AsyncSession) -> None:
+    allowed = await _allowed_branch_ids(current, db)
+    if allowed is not None and cl.branch_id not in allowed:
         raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
 
 
@@ -107,12 +116,6 @@ async def _get_checklist_or_404(checklist_id: int, db: AsyncSession) -> Checklis
     if not cl:
         raise HTTPException(status_code=404, detail="Чек-лист не найден")
     return cl
-
-
-async def _get_role(employee: Employee, db: AsyncSession) -> Role | None:
-    return (
-        await db.execute(select(Role).where(Role.id == employee.role_id))
-    ).scalar_one_or_none()
 
 
 # ── Builders ────────────────────────────────────────────────────────────────
@@ -253,6 +256,7 @@ async def _build_items_batch(
                 standard_title=standards.get(item.standard_code) if item.standard_code else None,
                 requires_photo=item.requires_photo,
                 requires_comment=item.requires_comment,
+                task_type=item.task_type or "checkbox",
             )
         )
     return result
@@ -308,19 +312,19 @@ async def _assert_completion_requirements(
             detail="Обязательно добавьте комментарий",
         )
     if item.requires_photo:
-        photos = (
+        photo = (
             await db.execute(
-                select(Photo).where(Photo.checklist_item_id == item.id)
+                select(Photo.id).where(Photo.checklist_item_id == item.id).limit(1)
             )
-        ).scalars().all()
-        if not photos:
+        ).scalar_one_or_none()
+        if photo is None:
             raise HTTPException(
                 status_code=400,
                 detail="Обязательно загрузите фото",
             )
 
 
-# ── Current-item helper ──────────────────────────────────────────────────────────────
+# ── Current-item helper ─────────────────────────────────────────────────────
 
 async def _build_current_item(
     checklist_id: int,
@@ -354,10 +358,355 @@ async def _build_current_item(
         standard_title=standard_title,
         requires_photo=item.requires_photo,
         requires_comment=item.requires_comment,
+        task_type=item.task_type or "checkbox",
     )
 
 
-# ── Step-by-step: complete a single item ─────────────────────────────────────────────
+# ── List / create ───────────────────────────────────────────────────────────
+
+@router.get("", response_model=list[ChecklistOut])
+async def list_checklists(
+    date: str | None = None,
+    branch_id: int | None = None,
+    status: str | None = None,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    allowed = await _allowed_branch_ids(current, db)
+
+    # Branch scoping is applied in SQL, not after loading every checklist.
+    query = select(Checklist)
+    if allowed is not None:
+        query = query.where(Checklist.branch_id.in_(allowed))
+    if date:
+        query = query.where(Checklist.date == date)
+    if branch_id:
+        query = query.where(Checklist.branch_id == branch_id)
+    if status:
+        query = query.where(Checklist.status == status)
+    query = query.order_by(Checklist.date.desc(), Checklist.id.desc())
+
+    visible = (await db.execute(query)).scalars().all()
+    if not visible:
+        return []
+
+    cl_ids = [cl.id for cl in visible]
+    branch_ids = {cl.branch_id for cl in visible}
+
+    branches_map: dict[int, str] = {
+        b.id: b.name
+        for b in (await db.execute(select(Branch).where(Branch.id.in_(branch_ids)))).scalars().all()
+    }
+    all_items = (
+        await db.execute(select(ChecklistItem).where(ChecklistItem.checklist_id.in_(cl_ids)))
+    ).scalars().all()
+
+    items_by_cl: dict[int, list[ChecklistItem]] = {}
+    for it in all_items:
+        items_by_cl.setdefault(it.checklist_id, []).append(it)
+
+    result = []
+    for cl in visible:
+        cl_items = items_by_cl.get(cl.id, [])
+        result.append(
+            _make_checklist_out(
+                cl,
+                branches_map.get(cl.branch_id, "—"),
+                len(cl_items),
+                sum(1 for i in cl_items if i.is_completed),
+                sum(1 for i in cl_items if i.is_skipped),
+            )
+        )
+    return result
+
+
+@router.post("", response_model=ChecklistOut)
+async def create_checklist(
+    data: ChecklistCreate,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    allowed = await _allowed_branch_ids(current, db)
+    if allowed is not None and data.branch_id not in allowed:
+        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+
+    tpl = (
+        await db.execute(
+            select(ChecklistTemplate).where(
+                ChecklistTemplate.id == data.template_id,
+                ChecklistTemplate.is_active == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Шаблон не найден или неактивен")
+
+    tpl_items = (
+        await db.execute(
+            select(ChecklistTemplateItem)
+            .where(ChecklistTemplateItem.template_id == tpl.id)
+            .order_by(ChecklistTemplateItem.sort_order, ChecklistTemplateItem.id)
+        )
+    ).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    due_at = (
+        now + timedelta(minutes=tpl.deadline_offset_minutes)
+        if tpl.deadline_offset_minutes
+        else None
+    )
+
+    cl = Checklist(
+        template_id=tpl.id,
+        template_name=tpl.name,
+        branch_id=data.branch_id,
+        shift=data.shift,
+        date=data.date,
+        status="open",
+        started_at=now,
+        due_at=due_at,
+        created_by_employee_id=current.id,
+    )
+    db.add(cl)
+    await db.flush()
+
+    for ti in tpl_items:
+        # Denormalize everything the bot / web panel needs at creation time,
+        # so later template edits don't change checklists already in progress.
+        db.add(
+            ChecklistItem(
+                checklist_id=cl.id,
+                title=ti.title,
+                title_uz=ti.title_uz,
+                title_en=ti.title_en,
+                description=ti.description,
+                description_uz=ti.description_uz,
+                description_en=ti.description_en,
+                sort_order=ti.sort_order,
+                is_required=ti.is_required,
+                standard_code=ti.standard_code,
+                requires_photo=ti.requires_photo,
+                requires_comment=ti.requires_comment,
+                task_type=ti.task_type or "checkbox",
+            )
+        )
+
+    await log_action(
+        db,
+        actor_id=current.id,
+        action="checklist.created",
+        entity_type="checklist",
+        entity_id=cl.id,
+        metadata={"template": tpl.name, "branch_id": data.branch_id, "shift": data.shift},
+    )
+    await db.commit()
+    await db.refresh(cl)
+    return await _build_out(cl, db)
+
+
+# ── Photo list (for the Photos report page) ─────────────────────────────────
+# Declared BEFORE /{checklist_id} so "photos" is not parsed as a checklist id.
+
+@router.get("/photos", response_model=list[PhotoListItem])
+async def list_photos(
+    branch_id: int | None = Query(None),
+    date_from: str | None = Query(None, description="YYYY-MM-DD, inclusive"),
+    date_to: str | None = Query(None, description="YYYY-MM-DD, inclusive"),
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[PhotoListItem]:
+    """
+    Return all photos the current employee is allowed to see, optionally
+    filtered by branch and/or date range of the parent checklist.
+
+    Access rules:
+      - Employees with can_access_all_branches=True see every photo.
+      - Everyone else only sees photos from their own branches.
+      - Passing branch_id further narrows the result.
+    """
+    allowed_branch_ids = await _allowed_branch_ids(current, db)
+
+    photos: list[Photo] = (
+        await db.execute(select(Photo).order_by(Photo.created_at.desc()))
+    ).scalars().all()
+
+    if not photos:
+        return []
+
+    item_ids = list({p.checklist_item_id for p in photos})
+    items_map: dict[int, ChecklistItem] = {
+        i.id: i
+        for i in (
+            await db.execute(select(ChecklistItem).where(ChecklistItem.id.in_(item_ids)))
+        ).scalars().all()
+    }
+
+    checklist_ids = list({i.checklist_id for i in items_map.values()})
+    checklists_map: dict[int, Checklist] = {
+        cl.id: cl
+        for cl in (
+            await db.execute(select(Checklist).where(Checklist.id.in_(checklist_ids)))
+        ).scalars().all()
+    }
+
+    branch_ids_used = list({cl.branch_id for cl in checklists_map.values()})
+    branches_map: dict[int, Branch] = {
+        b.id: b
+        for b in (
+            await db.execute(select(Branch).where(Branch.id.in_(branch_ids_used)))
+        ).scalars().all()
+    }
+
+    uploader_ids = list({p.uploaded_by_employee_id for p in photos if p.uploaded_by_employee_id})
+    uploaders_map: dict[int, str] = {
+        e.id: e.full_name
+        for e in (
+            await db.execute(select(Employee).where(Employee.id.in_(uploader_ids)))
+        ).scalars().all()
+    }
+
+    result: list[PhotoListItem] = []
+    for photo in photos:
+        item = items_map.get(photo.checklist_item_id)
+        if item is None:
+            continue
+        cl = checklists_map.get(item.checklist_id)
+        if cl is None:
+            continue
+        branch = branches_map.get(cl.branch_id)
+        if branch is None:
+            continue
+
+        if allowed_branch_ids is not None and cl.branch_id not in allowed_branch_ids:
+            continue
+        if branch_id is not None and cl.branch_id != branch_id:
+            continue
+
+        # YYYY-MM-DD strings compare correctly lexicographically.
+        if date_from and cl.date < date_from:
+            continue
+        if date_to and cl.date > date_to:
+            continue
+
+        result.append(
+            PhotoListItem(
+                id=photo.id,
+                checklist_id=cl.id,
+                checklist_name=cl.template_name,
+                item_id=item.id,
+                item_title=item.title,
+                branch_id=branch.id,
+                branch_name=branch.name,
+                shift=cl.shift,
+                date=cl.date,
+                uploaded_by_name=uploaders_map.get(photo.uploaded_by_employee_id, "—"),
+                url=photo.url,
+                created_at=photo.created_at,
+            )
+        )
+
+    return result
+
+
+@router.get("/photos/{filename}/signed-url")
+async def get_photo_signed_url(
+    filename: str,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    # 1. Path-traversal guard.
+    resolved = (UPLOAD_DIR / filename).resolve()
+    if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    # 2. Branch-access check: Photo → ChecklistItem → Checklist.
+    expected_url = f"/api/v1/checklists/photos/{filename}"
+    photo = (
+        await db.execute(select(Photo).where(Photo.url == expected_url))
+    ).scalar_one_or_none()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    item = (
+        await db.execute(
+            select(ChecklistItem).where(ChecklistItem.id == photo.checklist_item_id)
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    cl = await _get_checklist_or_404(item.checklist_id, db)
+    await _assert_branch_access(cl, current, db)
+
+    token, expires_at = _make_photo_token(filename)
+    return {
+        "url": f"/api/v1/checklists/photos/{filename}?token={token}",
+        "expires_at": str(expires_at),
+    }
+
+
+@router.get("/photos/{filename}")
+async def get_item_photo(
+    filename: str,
+    token: str = Query(..., description="HMAC-signed photo token from /photos/{filename}/signed-url"),
+) -> FileResponse:
+    _verify_photo_token(filename, token)
+
+    resolved = (UPLOAD_DIR / filename).resolve()
+    if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
+        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Фото не найдено")
+
+    return FileResponse(str(resolved))
+
+
+# ── Detail ──────────────────────────────────────────────────────────────────
+
+@router.get("/{checklist_id}", response_model=ChecklistDetail)
+async def get_checklist(
+    checklist_id: int,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
+
+    branch = (
+        await db.execute(select(Branch).where(Branch.id == cl.branch_id))
+    ).scalar_one_or_none()
+
+    ordered = await _get_ordered_items(checklist_id, db)
+    item_outs = await _build_items_batch(ordered, db)
+
+    base = _make_checklist_out(
+        cl,
+        branch.name if branch else "—",
+        len(ordered),
+        sum(1 for i in ordered if i.is_completed),
+        sum(1 for i in ordered if i.is_skipped),
+    )
+    return ChecklistDetail(**base.model_dump(), items=item_outs)
+
+
+# ── Current item (step-by-step mode) ────────────────────────────────────────
+
+@router.get("/{checklist_id}/current-item", response_model=CurrentItemOut | None)
+async def get_current_item(
+    checklist_id: int,
+    current: Employee = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    cl = await _get_checklist_or_404(checklist_id, db)
+    await _assert_branch_access(cl, current, db)
+    if cl.status == "completed":
+        return None
+    return await _build_current_item(checklist_id, db)
+
+
+# ── Step-by-step: complete a single item ────────────────────────────────────
 
 @router.patch("/{checklist_id}/items/{item_id}/toggle")
 async def toggle_item(
@@ -414,7 +763,7 @@ async def toggle_item(
     return {"is_completed": item.is_completed, "is_skipped": item.is_skipped}
 
 
-# ── Step-by-step: skip an optional item ─────────────────────────────────────────────
+# ── Step-by-step: skip an optional item ─────────────────────────────────────
 
 @router.post("/{checklist_id}/items/{item_id}/skip")
 async def skip_item(
@@ -464,7 +813,7 @@ async def skip_item(
     return {"is_skipped": True}
 
 
-# ── Complete the whole checklist ───────────────────────────────────────────────────
+# ── Complete the whole checklist ────────────────────────────────────────────
 
 @router.post("/{checklist_id}/complete")
 async def complete_checklist(
@@ -515,123 +864,7 @@ async def complete_checklist(
     return {"ok": True, "deadline_status": _compute_deadline_status(cl)}
 
 
-# ── Photo list (for the Photos report page) ────────────────────────────────────────
-
-@router.get("/photos", response_model=list[PhotoListItem])
-async def list_photos(
-    branch_id: int | None = Query(None),
-    date_from: str | None = Query(None, description="YYYY-MM-DD, inclusive"),
-    date_to: str | None = Query(None, description="YYYY-MM-DD, inclusive"),
-    current: Employee = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> list[PhotoListItem]:
-    """
-    Return all photos the current employee is allowed to see, optionally
-    filtered by branch and/or date range of the parent checklist.
-
-    Access rules:
-      - Employees with can_access_all_branches=True see every photo.
-      - Everyone else only sees photos from their own branches.
-      - Passing branch_id further narrows the result.
-    """
-    # 1. Resolve which branches the employee may access.
-    role = await _get_role(current, db)
-    can_all = bool(role and role.can_access_all_branches)
-    allowed_branch_ids: set[int] | None = None
-    if not can_all:
-        allowed_branch_ids = {current.primary_branch_id, *(current.additional_branch_ids or [])}
-
-    # 2. Load all photos with their checklist-item and checklist context.
-    #    We do this in three batch queries to avoid a heavy SQL JOIN.
-    photos: list[Photo] = (
-        await db.execute(select(Photo).order_by(Photo.created_at.desc()))
-    ).scalars().all()
-
-    if not photos:
-        return []
-
-    # 3. Batch-load checklist items.
-    item_ids = list({p.checklist_item_id for p in photos})
-    items_map: dict[int, ChecklistItem] = {
-        i.id: i
-        for i in (
-            await db.execute(select(ChecklistItem).where(ChecklistItem.id.in_(item_ids)))
-        ).scalars().all()
-    }
-
-    # 4. Batch-load checklists.
-    checklist_ids = list({i.checklist_id for i in items_map.values()})
-    checklists_map: dict[int, Checklist] = {
-        cl.id: cl
-        for cl in (
-            await db.execute(select(Checklist).where(Checklist.id.in_(checklist_ids)))
-        ).scalars().all()
-    }
-
-    # 5. Batch-load branches.
-    branch_ids_used = list({cl.branch_id for cl in checklists_map.values()})
-    branches_map: dict[int, Branch] = {
-        b.id: b
-        for b in (
-            await db.execute(select(Branch).where(Branch.id.in_(branch_ids_used)))
-        ).scalars().all()
-    }
-
-    # 6. Batch-load photo uploaders.
-    uploader_ids = list({p.uploaded_by_employee_id for p in photos if p.uploaded_by_employee_id})
-    uploaders_map: dict[int, str] = {
-        e.id: e.full_name
-        for e in (
-            await db.execute(select(Employee).where(Employee.id.in_(uploader_ids)))
-        ).scalars().all()
-    }
-
-    # 7. Assemble and apply filters.
-    result: list[PhotoListItem] = []
-    for photo in photos:
-        item = items_map.get(photo.checklist_item_id)
-        if item is None:
-            continue
-        cl = checklists_map.get(item.checklist_id)
-        if cl is None:
-            continue
-        branch = branches_map.get(cl.branch_id)
-        if branch is None:
-            continue
-
-        # Branch-access filter
-        if allowed_branch_ids is not None and cl.branch_id not in allowed_branch_ids:
-            continue
-        if branch_id is not None and cl.branch_id != branch_id:
-            continue
-
-        # Date-range filter (compares YYYY-MM-DD strings lexicographically — safe for ISO dates)
-        if date_from and cl.date < date_from:
-            continue
-        if date_to and cl.date > date_to:
-            continue
-
-        result.append(
-            PhotoListItem(
-                id=photo.id,
-                checklist_id=cl.id,
-                checklist_name=cl.template_name,
-                item_id=item.id,
-                item_title=item.title,
-                branch_id=branch.id,
-                branch_name=branch.name,
-                shift=cl.shift,
-                date=cl.date,
-                uploaded_by_name=uploaders_map.get(photo.uploaded_by_employee_id, "—"),
-                url=photo.url,
-                created_at=photo.created_at,
-            )
-        )
-
-    return result
-
-
-# ── Photo upload ──────────────────────────────────────────────────────────────────
+# ── Photo upload / delete ───────────────────────────────────────────────────
 
 @router.post("/{checklist_id}/items/{item_id}/photos", response_model=ChecklistItemPhotoOut)
 async def upload_item_photo(
@@ -687,59 +920,6 @@ async def upload_item_photo(
     )
 
 
-@router.get("/photos/{filename}/signed-url")
-async def get_photo_signed_url(
-    filename: str,
-    current: Employee = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, str]:
-    # 1. Path-traversal guard.
-    resolved = (UPLOAD_DIR / filename).resolve()
-    if not str(resolved).startswith(str(UPLOAD_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="Недопустимое имя файла")
-    if not resolved.exists():
-        raise HTTPException(status_code=404, detail="Фото не найдено")
-
-    # 2. Branch-access check: Photo → ChecklistItem → Checklist.
-    expected_url = f"/api/v1/checklists/photos/{filename}"
-    photo = (
-        await db.execute(select(Photo).where(Photo.url == expected_url))
-    ).scalar_one_or_none()
-    if not photo:
-        raise HTTPException(status_code=404, detail="Фото не найдено")
-
-    item = (
-        await db.execute(
-            select(ChecklistItem).where(ChecklistItem.id == photo.checklist_item_id)
-        )
-    ).scalar_one_or_none()
-    if not item:
-        raise HTTPException(status_code=404, detail="Фото не найдено")
-
-    cl = await _get_checklist_or_404(item.checklist_id, db)
-    await _assert_branch_access(cl, current, db)
-
-    token, expires_at = _make_photo_token(filename)
-    return {
-        "url": f"/api/v1/checklists/photos/{filename}?token={token}",
-        "expires_at": str(expires_at),
-    }
-
-
-@router.get("/photos/{filename}")
-async def get_item_photo(
-    filename: str,
-    token: str = Query(..., description="HMAC-signed photo token from /photos/{filename}/signed-url"),
-) -> FileResponse:
-    _verify_photo_token(filename, token)
-
-    path = UPLOAD_DIR / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Фото не найдено")
-
-    return FileResponse(str(path))
-
-
 @router.delete("/{checklist_id}/items/{item_id}/photos/{photo_id}")
 async def delete_item_photo(
     checklist_id: int,
@@ -759,7 +939,7 @@ async def delete_item_photo(
     if not photo:
         raise HTTPException(status_code=404, detail="Фото не найдено")
     if photo.uploaded_by_employee_id != current.id:
-        role = (await db.execute(select(Role).where(Role.id == current.role_id))).scalar_one_or_none()
+        role = await _get_role(current, db)
         if not role or role.permission_level < 1:
             raise HTTPException(status_code=403, detail="Недостаточно прав")
 
