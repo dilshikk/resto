@@ -12,6 +12,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # NOTE: these scripts run ONLY when the database volume is empty.
+      # For an existing database apply new migrations manually, e.g.:
+      #   docker compose exec -T db psql -U mado -d mado_checklist < backend/migrations/018_roles_branches_bot_token.sql
       - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql
       - ./backend/migrations/002_checklists.sql:/docker-entrypoint-initdb.d/002_checklists.sql
       - ./backend/migrations/003_issues.sql:/docker-entrypoint-initdb.d/003_issues.sql
@@ -28,6 +31,8 @@ services:
       - ./backend/migrations/014_checklist_item_requirements.sql:/docker-entrypoint-initdb.d/014_checklist_item_requirements.sql
       - ./backend/migrations/015_checklist_escalation.sql:/docker-entrypoint-initdb.d/015_checklist_escalation.sql
       - ./backend/migrations/016_i18n.sql:/docker-entrypoint-initdb.d/016_i18n.sql
+      - ./backend/migrations/017_task_types.sql:/docker-entrypoint-initdb.d/017_task_types.sql
+      - ./backend/migrations/018_roles_branches_bot_token.sql:/docker-entrypoint-initdb.d/018_roles_branches_bot_token.sql
     ports:
       - "5433:5432"
     healthcheck:
@@ -71,7 +76,7 @@ services:
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       BACKEND_URL: http://backend:8000/api/v1
-      # Must match SECRET_KEY set on the backend service.
+      # Must match BOT_INTERNAL_SECRET set on the backend service.
       BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
     depends_on:
       - backend
