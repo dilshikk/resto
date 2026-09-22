@@ -23,6 +23,7 @@ from app.routers.checklists import (
     _build_out,
     _find_current_item,
     _get_ordered_items,
+    _visible_to_role,
 )
 from app.models.checklist import Checklist, ChecklistItem
 from app.models.standard import Standard
@@ -259,11 +260,18 @@ async def list_my_checklists_today(
 ):
     today = date.today().isoformat()
     allowed = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
+    role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
+    is_manager = bool(role and role.permission_level >= 1)
+
     result = await db.execute(
         select(Checklist).where(Checklist.date == today).order_by(Checklist.id)
     )
     all_cls = result.scalars().all()
-    return [await _build_out(cl, db) for cl in all_cls if cl.branch_id in allowed]
+    return [
+        await _build_out(cl, db)
+        for cl in all_cls
+        if cl.branch_id in allowed and _visible_to_role(cl.role_ids or [], emp.role_id, is_manager)
+    ]
 
 
 @router.get("/checklists/{checklist_id}/current-item", response_model=CurrentItemOut | None)
@@ -329,6 +337,7 @@ async def get_my_current_item(
         standard_title=standard_title,
         requires_photo=item.requires_photo,
         requires_comment=item.requires_comment,
+        task_type=item.task_type or "checkbox",
     )
 
 
