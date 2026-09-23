@@ -1,7 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState, useCallback } from "react";
+import {
+  Camera,
+  Download,
+  Filter,
+  Image as ImageIcon,
+  X,
+  ZoomIn,
+} from "lucide-react";
+
 import { apiClient } from "@/api/client.ts";
 import { useAuth } from "@/context/auth-context.tsx";
+import { getMyProfile } from "@/api/employees.ts";
+import { listBranches } from "@/api/branches.ts";
+import type { Branch } from "@/api/branches.ts";
+import { getPhotoSignedUrl } from "@/api/checklists.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -26,61 +39,32 @@ export interface PhotosFilters {
   date_to?: string;
 }
 
+// ── Date formatting helpers ─────────────────────────────────────────────────
+// The project has no date-fns dependency; use the built-in Intl API instead.
+
+const shortDateFormatter = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit",
+  month: "short",
+});
+
+const longDateFormatter = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit",
+  month: "long",
+  year: "numeric",
+});
+
 // ── API call ────────────────────────────────────────────────────────────────
 
 async function fetchPhotos(filters: PhotosFilters): Promise<PhotoRecord[]> {
-  const params = new URLSearchParams();
-  if (filters.branch_id) params.set("branch_id", String(filters.branch_id));
-  if (filters.date_from) params.set("date_from", filters.date_from);
-  if (filters.date_to) params.set("date_to", filters.date_to);
-  const qs = params.toString();
-  return apiClient<PhotoRecord[]>(`/checklists/photos${qs ? `?${qs}` : ""}`);
+  const params: Record<string, string | number> = {};
+  if (filters.branch_id) params.branch_id = filters.branch_id;
+  if (filters.date_from) params.date_from = filters.date_from;
+  if (filters.date_to) params.date_to = filters.date_to;
+  const res = await apiClient.get<PhotoRecord[]>("/checklists/photos", {
+    params,
+  });
+  return res.data;
 }
-
-// ── Signed-URL helper ───────────────────────────────────────────────────────
-
-export async function getSignedPhotoUrl(filename: string): Promise<string> {
-  const data = await apiClient<{ url: string; expires_at: string }>(
-    `/checklists/photos/${filename}/signed-url`,
-  );
-  return data.url;
-}
-
-// ── Page component ──────────────────────────────────────────────────────────
-
-import { useRef } from "react";
-import {
-  Camera,
-  Download,
-  Filter,
-  Image as ImageIcon,
-  X,
-  ZoomIn,
-} from "lucide-react";
-import { format } from "date-fns";
-import { ru } from "date-fns/locale";
-
-import { getMyProfile } from "@/api/employees.ts";
-import { getBranches } from "@/api/branches.ts";
-import type { BranchListItem } from "@/api/branches.ts";
-import { Button } from "@/components/ui/button.tsx";
-import { Card, CardContent } from "@/components/ui/card.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Badge } from "@/components/ui/badge.tsx";
-import { Skeleton } from "@/components/ui/skeleton.tsx";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog.tsx";
 
 // ── Photo card ─────────────────────────────────────────────────────────────
 
@@ -93,54 +77,51 @@ function PhotoCard({
 }) {
   // Build the authenticated URL for the img src: use the signed-url endpoint
   // so the image is served with a time-limited HMAC token.
-  const { data: signedData } = useQuery({
+  const { data: signedUrl } = useQuery({
     queryKey: ["photo-signed", photo.url],
-    queryFn: () => {
-      const filename = photo.url.split("/").pop() ?? "";
-      return getSignedPhotoUrl(filename);
-    },
+    queryFn: () => getPhotoSignedUrl(photo.url),
     staleTime: 50 * 60 * 1000, // 50 min — token TTL is 60 min
     gcTime: 60 * 60 * 1000,
   });
 
   return (
-    <Card
-      className="group overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
+    <div
+      className="group cursor-pointer overflow-hidden rounded-xl border bg-card shadow-sm transition-shadow hover:shadow-md"
       onClick={() => onOpen(photo)}
     >
-      <div className="relative aspect-square bg-muted overflow-hidden">
-        {signedData ? (
+      <div className="relative aspect-square overflow-hidden bg-muted">
+        {signedUrl ? (
           <img
-            src={signedData}
+            src={signedUrl}
             alt={photo.item_title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+            className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center">
+          <div className="flex h-full w-full items-center justify-center">
             <ImageIcon className="size-10 text-muted-foreground" />
           </div>
         )}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <ZoomIn className="size-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/20">
+          <ZoomIn className="size-6 text-white opacity-0 transition-opacity group-hover:opacity-100" />
         </div>
       </div>
-      <CardContent className="p-3 space-y-1">
-        <p className="text-sm font-medium truncate" title={photo.item_title}>
+      <div className="space-y-1 p-3">
+        <p className="truncate text-sm font-medium" title={photo.item_title}>
           {photo.item_title}
         </p>
-        <p className="text-xs text-muted-foreground truncate">
+        <p className="truncate text-xs text-muted-foreground">
           {photo.checklist_name}
         </p>
         <div className="flex items-center justify-between gap-2">
-          <Badge variant="secondary" className="text-xs">
+          <span className="inline-flex items-center rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
             {photo.branch_name}
-          </Badge>
+          </span>
           <span className="text-xs text-muted-foreground">
-            {format(new Date(photo.created_at), "dd MMM", { locale: ru })}
+            {shortDateFormatter.format(new Date(photo.created_at))}
           </span>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -157,7 +138,7 @@ function PhotoLightbox({
   open: boolean;
   onClose: () => void;
 }) {
-  if (!photo) return null;
+  if (!open || !photo) return null;
 
   const handleDownload = () => {
     if (!signedUrl) return;
@@ -168,49 +149,45 @@ function PhotoLightbox({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-3xl p-0 overflow-hidden">
-        <DialogHeader className="sr-only">
-          <DialogTitle>{photo.item_title}</DialogTitle>
-        </DialogHeader>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-3xl overflow-hidden rounded-2xl border bg-card shadow-xl">
         <div className="relative">
           {signedUrl ? (
             <img
               src={signedUrl}
               alt={photo.item_title}
-              className="w-full max-h-[70vh] object-contain bg-black"
+              className="max-h-[70vh] w-full bg-black object-contain"
             />
           ) : (
-            <div className="w-full h-64 flex items-center justify-center bg-muted">
+            <div className="flex h-64 w-full items-center justify-center bg-muted">
               <ImageIcon className="size-16 text-muted-foreground" />
             </div>
           )}
           <button
             type="button"
             onClick={onClose}
-            className="absolute top-2 right-2 rounded-full bg-black/60 p-1 text-white hover:bg-black/80 transition-colors"
+            className="absolute top-2 right-2 rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/80"
           >
             <X className="size-4" />
           </button>
         </div>
-        <div className="p-4 space-y-3">
+        <div className="space-y-3 p-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className="font-semibold truncate">{photo.item_title}</p>
-              <p className="text-sm text-muted-foreground truncate">
+              <p className="truncate font-semibold">{photo.item_title}</p>
+              <p className="truncate text-sm text-muted-foreground">
                 {photo.checklist_name}
               </p>
             </div>
-            <Button
-              variant="secondary"
-              size="sm"
+            <button
+              type="button"
               onClick={handleDownload}
               disabled={!signedUrl}
-              className="shrink-0"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
             >
-              <Download className="size-4 mr-1.5" />
+              <Download className="size-4" />
               Скачать
-            </Button>
+            </button>
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
             <div>
@@ -224,9 +201,7 @@ function PhotoLightbox({
             <div>
               <span className="text-muted-foreground">Дата:</span>{" "}
               <span>
-                {format(new Date(photo.date + "T00:00:00"), "dd MMMM yyyy", {
-                  locale: ru,
-                })}
+                {longDateFormatter.format(new Date(`${photo.date}T00:00:00`))}
               </span>
             </div>
             <div>
@@ -235,8 +210,8 @@ function PhotoLightbox({
             </div>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   );
 }
 
@@ -250,7 +225,7 @@ function FiltersBar({
   isManager,
 }: {
   filters: PhotosFilters;
-  branches: BranchListItem[];
+  branches: Branch[];
   onChange: (f: Partial<PhotosFilters>) => void;
   onReset: () => void;
   isManager: boolean;
@@ -263,54 +238,59 @@ function FiltersBar({
       {isManager && (
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Филиал</span>
-          <Select
+          <select
+            className="w-44 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
             value={filters.branch_id ? String(filters.branch_id) : "all"}
-            onValueChange={(v) =>
-              onChange({ branch_id: v === "all" ? undefined : Number(v) })
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+              onChange({
+                branch_id:
+                  e.target.value === "all" ? undefined : Number(e.target.value),
+              })
             }
           >
-            <SelectTrigger className="w-44">
-              <SelectValue placeholder="Все филиалы" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Все филиалы</SelectItem>
-              {branches.map((b) => (
-                <SelectItem key={b.id} value={String(b.id)}>
-                  {b.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            <option value="all">Все филиалы</option>
+            {branches.map((b) => (
+              <option key={b.id} value={String(b.id)}>
+                {b.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Дата от</span>
-        <Input
+        <input
           type="date"
           value={filters.date_from ?? ""}
-          onChange={(e) =>
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
             onChange({ date_from: e.target.value || undefined })
           }
-          className="w-36"
+          className="w-36 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
 
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted-foreground">Дата до</span>
-        <Input
+        <input
           type="date"
           value={filters.date_to ?? ""}
-          onChange={(e) => onChange({ date_to: e.target.value || undefined })}
-          className="w-36"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            onChange({ date_to: e.target.value || undefined })
+          }
+          className="w-36 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
 
       {hasActive && (
-        <Button variant="ghost" size="sm" onClick={onReset} className="gap-1">
+        <button
+          type="button"
+          onClick={onReset}
+          className="flex items-center gap-1 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
           <X className="size-3.5" />
           Сбросить
-        </Button>
+        </button>
       )}
     </div>
   );
@@ -333,7 +313,7 @@ export default function PhotosPage() {
 
   const { data: branches = [] } = useQuery({
     queryKey: ["branches"],
-    queryFn: getBranches,
+    queryFn: listBranches,
     enabled: isAuthenticated && isManager,
   });
 
@@ -346,10 +326,7 @@ export default function PhotosPage() {
   // Signed URL for the lightbox photo
   const { data: lightboxSignedUrl } = useQuery({
     queryKey: ["photo-signed", lightboxPhoto?.url],
-    queryFn: () => {
-      const filename = lightboxPhoto!.url.split("/").pop() ?? "";
-      return getSignedPhotoUrl(filename);
-    },
+    queryFn: () => getPhotoSignedUrl(lightboxPhoto!.url),
     enabled: !!lightboxPhoto,
     staleTime: 50 * 60 * 1000,
   });
@@ -363,10 +340,10 @@ export default function PhotosPage() {
   const handleReset = useCallback(() => setFilters({}), []);
 
   return (
-    <div className="p-4 md:p-6 space-y-5">
+    <div className="space-y-5 p-4 md:p-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Camera className="size-6 text-primary shrink-0" />
+        <Camera className="size-6 shrink-0 text-primary" />
         <div>
           <h1 className="text-xl font-semibold">Фотоотчёты</h1>
           <p className="text-sm text-muted-foreground">
@@ -377,7 +354,7 @@ export default function PhotosPage() {
 
       {/* Filters */}
       <div className="flex items-start gap-2">
-        <Filter className="size-4 text-muted-foreground mt-2.5 shrink-0" />
+        <Filter className="mt-2.5 size-4 shrink-0 text-muted-foreground" />
         <FiltersBar
           filters={filters}
           branches={branches}
@@ -389,17 +366,21 @@ export default function PhotosPage() {
 
       {/* Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
           {Array.from({ length: 10 }).map((_, i) => (
-            <Skeleton key={i} className="aspect-square rounded-lg" />
+            <div
+              key={i}
+              className="aspect-square animate-pulse rounded-xl border bg-muted"
+            />
           ))}
         </div>
       ) : !photos || photos.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
+        <div className="flex flex-col items-center justify-center gap-3 py-20 text-center text-muted-foreground">
           <Camera className="size-12" />
           <p className="text-base font-medium">Фотографий нет</p>
           <p className="text-sm">
-            Фотографии появятся здесь после их прикрепления к пунктам чек-листов
+            Фотографии появятся здесь после их прикрепления к пунктам
+            чек-листов
           </p>
         </div>
       ) : (
@@ -407,7 +388,7 @@ export default function PhotosPage() {
           <p className="text-sm text-muted-foreground">
             Найдено: {photos.length} фото
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
             {photos.map((photo) => (
               <PhotoCard
                 key={`${photo.checklist_id}-${photo.item_id}-${photo.id}`}
