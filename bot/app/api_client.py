@@ -6,7 +6,8 @@ Every request carries two credentials:
   X-Bot-Secret            -- proves the request comes from *our* bot service
   X-Bot-Employee-Token    -- per-employee token issued by POST /bot/link or
                              POST /bot/resync (required on all endpoints
-                             except /bot/link and /bot/resync themselves)
+                             except /bot/link, /bot/resync, /bot/register,
+                             and /bot/status themselves)
 
 The plaintext token is stored in-memory keyed by telegram_id.  On bot
 restart the cache is empty. Rather than dead-ending the employee, the first
@@ -14,7 +15,7 @@ command that needs an employee token calls _ensure_token(), which -- on a
 cache miss -- transparently calls POST /bot/resync to mint a fresh token for
 an already-linked telegram_id (no invite code needed, since Telegram itself
 already authenticates the caller). Only a genuinely never-linked telegram_id
-(resync returns 404) falls through to asking for an invite code.
+(resync returns 404) falls through to asking for an invite code / registration.
 """
 from typing import Any
 
@@ -126,6 +127,40 @@ async def get_employee_lang(telegram_id: int) -> str:
         return lang
     except ApiError:
         return "ru"
+
+
+# ---- Self-service registration (no employee token) ---------------------------
+
+async def get_registration_status(telegram_id: int) -> dict[str, Any]:
+    """
+    GET /bot/status — lets the bot decide what to show on /start before it
+    has a per-employee token: "not_registered" | "pending" | "active" |
+    "blocked" | "archived" | "inactive" | "fired".
+    """
+    async with _base_client() as c:
+        resp = await c.get("/bot/status", params={"telegram_id": telegram_id})
+        return await _handle(resp)
+
+
+async def register_account(
+    telegram_id: int, full_name: str, username: str | None, phone: str | None
+) -> dict[str, Any]:
+    """
+    POST /bot/register — self-service registration for a telegram_id that
+    has never been seen before. Creates a "pending" employee record; a
+    manager approves or rejects it from the web panel.
+    """
+    async with _base_client() as c:
+        resp = await c.post(
+            "/bot/register",
+            json={
+                "telegram_id": telegram_id,
+                "full_name": full_name,
+                "username": username,
+                "phone": phone,
+            },
+        )
+        return await _handle(resp)
 
 
 # ---- Bot-level endpoints (no employee token) ---------------------------------
