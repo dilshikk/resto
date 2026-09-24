@@ -1,4 +1,10 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 from app.i18n import t
 
@@ -154,3 +160,26 @@ def skip_location_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+# ── Self-service registration ─────────────────────────────────────────────
+
+def share_contact_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
+    """
+    Reply-keyboard with a single "Share contact" button using Telegram's
+    native contact-request feature (request_contact=True). Telegram fills
+    in the user's own phone number automatically — they only need to tap
+    the button and confirm.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=t("share_contact_btn", lang), request_contact=True)]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def remove_keyboard() -> ReplyKeyboardRemove:
+    """Hide the reply-keyboard once the contact has been shared."""
+    return ReplyKeyboardRemove()
