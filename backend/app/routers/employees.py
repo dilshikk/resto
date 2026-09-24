@@ -3,12 +3,13 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import get_current_user, get_current_web_user, require_manager
 from app.database import get_db
 from app.models.branch import Branch
+from app.models.checklist import Checklist, ChecklistItem, ChecklistTemplate
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
 from app.models.user import User
@@ -30,10 +31,6 @@ INVITE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _VALID_LANGS = frozenset({"ru", "uz", "en"})
 _MAX_INVITE_ATTEMPTS = 10
 
-# Statuses a manager can filter/search by from the "Сотрудники" screen.
-# "inactive"/"fired" are legacy values kept for backward compatibility with
-# rows created before self-registration existed; new manual deactivation
-# from the web panel uses "blocked"/"archived" instead (see EmployeeUpdate).
 _VALID_STATUSES = frozenset({"pending", "active", "blocked", "archived", "inactive", "fired"})
 
 logger = logging.getLogger(__name__)
@@ -64,13 +61,6 @@ async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSess
 
 
 async def _assert_branch_access_to_employee(emp: Employee, current: Employee, db: AsyncSession) -> None:
-    """
-    Raise 403 unless the acting manager has access to at least one of the
-    target employee's branches.  Roles with can_access_all_branches=True
-    are exempt and can act on any employee. A "pending" self-registered
-    employee has no branch yet, so any manager may act on it (there is no
-    branch to scope by until it is approved).
-    """
     if emp.primary_branch_id is None:
         return
     role = await _get_own_role(current, db)
@@ -117,7 +107,6 @@ def _employee_out_from_cache(
 
 
 async def _build_employee_out(emp: Employee, db: AsyncSession) -> EmployeeOut:
-    """Single-record builder — used after create/update/approve (no list context)."""
     role = None
     if emp.role_id is not None:
         role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
@@ -137,10 +126,6 @@ async def _insert_employee_with_unique_invite(
     emp: Employee,
     db: AsyncSession,
 ) -> None:
-    """
-    Insert *emp* into the session and flush, retrying with a fresh invite
-    code on the rare event of a UNIQUE constraint violation on invite_code.
-    """
     for attempt in range(_MAX_INVITE_ATTEMPTS):
         try:
             db.add(emp)
@@ -202,18 +187,6 @@ async def list_employees(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    List employees visible to the acting manager.
-
-    - `q` searches full_name (case-insensitive substring), phone, and
-      telegram_id (exact match if q is numeric).
-    - `status` filters to a single status ("pending" | "active" | "blocked" |
-      "archived", plus legacy "inactive"/"fired").
-    - Employees with status="pending" have no branch assigned yet (they are
-      awaiting manager review), so they are always included regardless of
-      branch scoping — otherwise a self-registered request could become
-      invisible to every manager who isn't a can_access_all_branches role.
-    """
     if status is not None and status not in _VALID_STATUSES:
         raise HTTPException(status_code=422, detail="Неверный статус")
 
@@ -381,6 +354,60 @@ async def update_employee(
     return await _build_employee_out(emp, db)
 
 
+@router.delete("/{employee_id}")
+async def delete_employee(
+    employee_id: int,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Permanently delete an employee and all their associations:
+    - employee_accounts (CASCADE, handled by DB)
+    - checklist_items.completed_by_employee_id  → NULL
+    - checklists.created_by_employee_id         → NULL
+    - checklist_templates.created_by_employee_id → NULL
+    """
+    emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    # Prevent self-deletion.
+    if emp.id == current.id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
+
+    await _assert_branch_access_to_employee(emp, current, db)
+
+    # Nullify FK references that are not CASCADE so the DELETE won't fail.
+    await db.execute(
+        update(ChecklistItem)
+        .where(ChecklistItem.completed_by_employee_id == employee_id)
+        .values(completed_by_employee_id=None)
+    )
+    await db.execute(
+        update(Checklist)
+        .where(Checklist.created_by_employee_id == employee_id)
+        .values(created_by_employee_id=None)
+    )
+    await db.execute(
+        update(ChecklistTemplate)
+        .where(ChecklistTemplate.created_by_employee_id == employee_id)
+        .values(created_by_employee_id=None)
+    )
+
+    await log_action(
+        db,
+        actor_id=current.id,
+        action="employee.deleted",
+        entity_type="employee",
+        entity_id=emp.id,
+        metadata={"full_name": emp.full_name, "telegram_id": emp.telegram_id},
+    )
+
+    await db.delete(emp)
+    await db.commit()
+    return {"ok": True}
+
+
 @router.post("/{employee_id}/approve", response_model=EmployeeOut)
 async def approve_employee(
     employee_id: int,
@@ -388,12 +415,6 @@ async def approve_employee(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Confirm a self-registered ("pending") employee: assign the restaurant
-    (branch) and position (role) picked in the "Сотрудники" screen and move
-    them to status="active", granting checklist access via the bot.
-    Also usable to re-assign a "blocked"/"archived" employee back to active.
-    """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
@@ -411,13 +432,12 @@ async def approve_employee(
                 detail="Нельзя назначить сотрудника в филиал, к которому у вас нет доступа",
             )
 
-    # Resolve display names for the Telegram notification before the commit.
     assigned_role = (await db.execute(select(Role).where(Role.id == data.role_id))).scalar_one_or_none()
     assigned_branch = (await db.execute(select(Branch).where(Branch.id == data.primary_branch_id))).scalar_one_or_none()
     lang = emp.preferred_language or "ru"
     role_name = assigned_role.name_ru if assigned_role else "—"
     branch_name = assigned_branch.name if assigned_branch else "—"
-    tg_id = emp.telegram_id  # capture before commit so it is always available
+    tg_id = emp.telegram_id
 
     emp.role_id = data.role_id
     emp.primary_branch_id = data.primary_branch_id
@@ -425,9 +445,6 @@ async def approve_employee(
     emp.status = "active"
     if data.hired_at:
         emp.hired_at = data.hired_at
-    # Self-registered employees have no invite_code (they never need one,
-    # since telegram_id is already linked); only generate one if somehow
-    # missing so /employees/{id}/regenerate-invite has something to rotate.
     if not emp.invite_code:
         emp.invite_code = _gen_invite()
 
@@ -438,7 +455,6 @@ async def approve_employee(
     await db.commit()
     await db.refresh(emp)
 
-    # Notify the employee in Telegram (fire-and-forget, never raises).
     await notify_employee_approved(tg_id, lang, role_name, branch_name)
 
     return await _build_employee_out(emp, db)
@@ -450,19 +466,12 @@ async def reject_employee(
     current: Employee = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Reject a self-registered ("pending") request — the record is removed
-    entirely so the same Telegram account can register again later if the
-    rejection was a mistake (POST /bot/register only rejects telegram_ids
-    that already exist).
-    """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
     if emp.status != "pending":
         raise HTTPException(status_code=400, detail="Можно отклонить только заявки на рассмотрении")
 
-    # Capture before delete.
     tg_id = emp.telegram_id
     lang = emp.preferred_language or "ru"
 
@@ -473,7 +482,6 @@ async def reject_employee(
     await db.delete(emp)
     await db.commit()
 
-    # Notify the employee in Telegram (fire-and-forget, never raises).
     await notify_employee_rejected(tg_id, lang)
 
     return {"ok": True}
@@ -494,8 +502,6 @@ async def regenerate_invite(
     for attempt in range(_MAX_INVITE_ATTEMPTS):
         new_code = _gen_invite()
         emp.invite_code = new_code
-        # Revoke the Telegram link and bot session token so the employee
-        # must re-link with the new invite code.
         emp.telegram_id = None
         emp.bot_session_token_hash = None
         try:
