@@ -50,6 +50,35 @@ STRINGS: dict[str, dict[str, str]] = {
         ),
         "link_error": "Не удалось привязать аккаунт: {detail}",
 
+        # ── Self-service registration (link.py) ──
+        "ask_share_contact": (
+            "Здравствуйте! 👋\n\n"
+            "Я вас пока не знаю. Нажмите кнопку ниже, чтобы поделиться контактом "
+            "и зарегистрироваться."
+        ),
+        "share_contact_btn": "📱 Поделиться контактом",
+        "contact_wrong_input": "Пожалуйста, нажмите кнопку «Поделиться контактом» ниже.",
+        "registration_pending": (
+            "Спасибо, {name}! ✅\n\n"
+            "Ваша заявка отправлена на рассмотрение менеджеру.\n"
+            "Статус: 🟡 На проверке\n\n"
+            "Мы напишем, как только заявку подтвердят."
+        ),
+        "registration_error": "Не удалось отправить заявку: {detail}",
+        "status_pending": (
+            "Здравствуйте, {name}! 👋\n\n"
+            "Ваша заявка ещё на рассмотрении у менеджера.\n"
+            "Статус: 🟡 На проверке"
+        ),
+        "status_blocked": (
+            "Здравствуйте, {name}.\n\n"
+            "Ваш доступ заблокирован. Обратитесь к менеджеру."
+        ),
+        "status_archived": (
+            "Здравствуйте, {name}.\n\n"
+            "Ваш профиль в архиве. Обратитесь к менеджеру, если это ошибка."
+        ),
+
         # ── Checklists (checklists.py) ──
         "step_header": "Шаг {current}/{total}",
         "standard_label": "Стандарт: {title}",
@@ -135,6 +164,36 @@ STRINGS: dict[str, dict[str, str]] = {
             "/today buyrug'i bugungi chek-ro'yxatlaringizni ko'rsatadi."
         ),
         "link_error": "Hisobni bog'lashda xato: {detail}",
+
+        # Self-service registration
+        "ask_share_contact": (
+            "Salom! 👋\n\n"
+            "Men sizni hali tanimayman. Ro'yxatdan o'tish uchun quyidagi tugmani "
+            "bosib, kontaktingizni ulashing."
+        ),
+        "share_contact_btn": "📱 Kontaktni ulashish",
+        "contact_wrong_input": "Iltimos, quyidagi «Kontaktni ulashish» tugmasini bosing.",
+        "registration_pending": (
+            "Rahmat, {name}! ✅\n\n"
+            "So'rovingiz menejer ko'rib chiqishi uchun yuborildi.\n"
+            "Holat: 🟡 Ko'rib chiqilmoqda\n\n"
+            "So'rov tasdiqlanganda sizga yozamiz."
+        ),
+        "registration_error": "So'rovni yuborishda xato: {detail}",
+        "status_pending": (
+            "Salom, {name}! 👋\n\n"
+            "So'rovingiz hali menejer ko'rib chiqishida.\n"
+            "Holat: 🟡 Ko'rib chiqilmoqda"
+        ),
+        "status_blocked": (
+            "Salom, {name}.\n\n"
+            "Sizning kirishingiz bloklangan. Menejerga murojaat qiling."
+        ),
+        "status_archived": (
+            "Salom, {name}.\n\n"
+            "Profilingiz arxivda. Bu xato bo'lsa, menejerga murojaat qiling."
+        ),
+
         "step_header": "{current}/{total}-qadam",
         "standard_label": "Standart: {title}",
         "optional_item": "(ixtiyoriy band — o'tkazib yuborish mumkin)",
@@ -216,6 +275,36 @@ STRINGS: dict[str, dict[str, str]] = {
             "Use /today to see your checklists."
         ),
         "link_error": "Could not link account: {detail}",
+
+        # Self-service registration
+        "ask_share_contact": (
+            "Hello! 👋\n\n"
+            "I don't know you yet. Tap the button below to share your contact "
+            "and register."
+        ),
+        "share_contact_btn": "📱 Share contact",
+        "contact_wrong_input": "Please tap the \"Share contact\" button below.",
+        "registration_pending": (
+            "Thank you, {name}! ✅\n\n"
+            "Your request was sent to the manager for review.\n"
+            "Status: 🟡 Pending review\n\n"
+            "We'll notify you once it's confirmed."
+        ),
+        "registration_error": "Could not submit request: {detail}",
+        "status_pending": (
+            "Hello, {name}! 👋\n\n"
+            "Your request is still pending manager review.\n"
+            "Status: 🟡 Pending review"
+        ),
+        "status_blocked": (
+            "Hello, {name}.\n\n"
+            "Your access is blocked. Please contact your manager."
+        ),
+        "status_archived": (
+            "Hello, {name}.\n\n"
+            "Your profile is archived. Contact your manager if this is a mistake."
+        ),
+
         "step_header": "Step {current}/{total}",
         "standard_label": "Standard: {title}",
         "optional_item": "(optional \u2014 can be skipped)",
