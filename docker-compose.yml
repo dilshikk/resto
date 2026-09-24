@@ -54,6 +54,9 @@ services:
       # Required — no fallback. Set in .env or the environment.
       # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
       BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
+      # Optional: used by the backend to push Telegram notifications directly
+      # (approve / reject). If unset, those pushes are silently skipped.
+      BOT_TOKEN: ${BOT_TOKEN}
       PHOTOS_DIR: /data/uploads
     volumes:
       # Checklist item photos previously lived in /tmp, which docker wipes on
