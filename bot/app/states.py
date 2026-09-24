@@ -5,6 +5,17 @@ class LinkStates(StatesGroup):
     waiting_for_code = State()
 
 
+class RegisterStates(StatesGroup):
+    """
+    Self-service registration flow, entered when /start is pressed by a
+    telegram_id that GET /bot/status reports as "not_registered" (i.e. it
+    has no invite code and has never messaged the bot before).
+    """
+    # Waiting for the employee to tap the "Share contact" reply-keyboard
+    # button so we can capture their phone number.
+    waiting_for_contact = State()
+
+
 class ItemStates(StatesGroup):
     waiting_for_problem_comment = State()
 
