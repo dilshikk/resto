@@ -53,6 +53,18 @@ def set_token_cache(telegram_id: int, token: str) -> None:
     _token_cache[telegram_id] = token
 
 
+def clear_session(telegram_id: int) -> None:
+    """
+    Forget the cached token and language for *telegram_id*.
+
+    Called when the backend rejects the token (401) -- e.g. the employee was
+    deleted from the web panel. The next request then resyncs from scratch
+    instead of retrying a token that belongs to a removed employee.
+    """
+    _token_cache.pop(telegram_id, None)
+    _lang_cache.pop(telegram_id, None)
+
+
 async def _ensure_token(telegram_id: int) -> str:
     """
     Return a valid session token for *telegram_id*, resyncing with the

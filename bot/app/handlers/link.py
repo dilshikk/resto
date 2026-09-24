@@ -24,6 +24,27 @@ async def _greet_linked_employee(message: Message, telegram_id: int, lang: str) 
     )
 
 
+async def _try_greet(message: Message, telegram_id: int, lang: str) -> bool:
+    """
+    Greet an already-linked employee. Returns False when the employee is not
+    linked (401/404) so the caller continues with the registration flow.
+
+    On 401 the cached session token is dropped: it may belong to an employee
+    that was deleted from the web panel. Without this, the same person would
+    keep the stale token after re-registering and being approved again.
+    """
+    try:
+        await _greet_linked_employee(message, telegram_id, lang)
+        return True
+    except ApiError as e:
+        if e.status_code == 401:
+            api_client.clear_session(telegram_id)
+            return False
+        if e.status_code == 404:
+            return False
+        raise
+
+
 async def _handle_unlinked_start(
     message: Message, telegram_id: int, code: str, state: FSMContext, lang: str
 ) -> None:
@@ -81,38 +102,27 @@ async def _handle_unlinked_start(
     await message.answer(t("ask_for_code", lang))
 
 
-@router.message(CommandStart(deep_link=True))
-async def start_with_code(message: Message, command: CommandObject, state: FSMContext) -> None:
+async def _start(message: Message, state: FSMContext, code: str) -> None:
     telegram_id = message.from_user.id
     lang = get_lang(message.from_user.language_code)
-    code = (command.args or "").strip()
-
-    # Try to greet if already linked (token may be in cache from previous session)
     try:
-        await _greet_linked_employee(message, telegram_id, lang)
-        return
-    except ApiError as e:
-        # 401 = session token missing/expired; 404 = not linked yet
-        if e.status_code not in (401, 404):
-            await message.answer(t("error_generic", lang, detail=e.detail))
+        if await _try_greet(message, telegram_id, lang):
             return
+    except ApiError as e:
+        await message.answer(t("error_generic", lang, detail=e.detail))
+        return
 
     await _handle_unlinked_start(message, telegram_id, code, state, lang)
 
 
+@router.message(CommandStart(deep_link=True))
+async def start_with_code(message: Message, command: CommandObject, state: FSMContext) -> None:
+    await _start(message, state, (command.args or "").strip())
+
+
 @router.message(CommandStart())
 async def start_plain(message: Message, state: FSMContext) -> None:
-    telegram_id = message.from_user.id
-    lang = get_lang(message.from_user.language_code)
-    try:
-        await _greet_linked_employee(message, telegram_id, lang)
-        return
-    except ApiError as e:
-        if e.status_code not in (401, 404):
-            await message.answer(t("error_generic", lang, detail=e.detail))
-            return
-
-    await _handle_unlinked_start(message, telegram_id, "", state, lang)
+    await _start(message, state, "")
 
 
 @router.message(LinkStates.waiting_for_code, F.text)
