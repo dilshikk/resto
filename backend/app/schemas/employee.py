@@ -57,6 +57,7 @@ class EmployeeOut(BaseModel):
     invite_code: str | None = None
     has_claimed_account: bool
     telegram_linked: bool
+    telegram_id: int | None = None
     telegram_username: str | None = None
     hired_at: str | None = None
     preferred_language: str = "ru"
