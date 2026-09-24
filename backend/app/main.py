@@ -19,6 +19,7 @@ from app.routers import (
     branches,
     roles,
     employees,
+    employee_removal,
     templates,
     checklists,
     analytics,
@@ -91,6 +92,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(branches.router, prefix="/api/v1")
 app.include_router(roles.router, prefix="/api/v1")
 app.include_router(employees.router, prefix="/api/v1")
+app.include_router(employee_removal.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(checklists.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")

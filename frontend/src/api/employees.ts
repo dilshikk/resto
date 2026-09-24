@@ -59,6 +59,10 @@ export type EmployeeApprove = {
   hired_at?: string;
 };
 
+// "deleted"  — row removed entirely
+// "archived" — employee has history, kept in archive but detached from Telegram
+export type DeleteEmployeeResult = { ok: boolean; mode: "deleted" | "archived" };
+
 export type MyProfile = {
   id: number;
   full_name: string;
@@ -104,6 +108,11 @@ export async function approveEmployee(id: number, data: EmployeeApprove): Promis
 
 export async function rejectEmployee(id: number): Promise<void> {
   await apiClient.post(`/employees/${id}/reject`);
+}
+
+export async function deleteEmployee(id: number): Promise<DeleteEmployeeResult> {
+  const res = await apiClient.delete<DeleteEmployeeResult>(`/employees/${id}`);
+  return res.data;
 }
 
 export async function regenerateInviteCode(id: number): Promise<{ invite_code: string }> {
