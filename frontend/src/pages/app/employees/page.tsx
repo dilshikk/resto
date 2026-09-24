@@ -5,25 +5,41 @@ import {
   listEmployees,
   createEmployee,
   updateEmployee,
+  approveEmployee,
+  rejectEmployee,
   regenerateInviteCode,
   unlinkEmployeeAccount,
   listRoles,
 } from "@/api/employees.ts";
-import type { Employee, EmployeeCreate, EmployeeUpdate } from "@/api/employees.ts";
+import type { Employee, EmployeeCreate, EmployeeUpdate, EmployeeStatus } from "@/api/employees.ts";
 import { listBranches } from "@/api/branches.ts";
-import { Users, Plus, KeyRound, Copy, Pencil, Send, Unlink } from "lucide-react";
+import { Users, Plus, KeyRound, Copy, Pencil, Send, Unlink, Search, Check, X, Phone } from "lucide-react";
 
-const STATUS_LABEL: Record<string, string> = {
-  active: "Активен",
+const STATUS_LABEL: Record<EmployeeStatus, string> = {
+  pending: "🟡 На проверке",
+  active: "🟢 Активен",
+  blocked: "🔴 Заблокирован",
+  archived: "⚪ Архив",
   inactive: "Неактивен",
   fired: "Уволен",
 };
 
-const STATUS_COLOR: Record<string, string> = {
+const STATUS_COLOR: Record<EmployeeStatus, string> = {
+  pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
   active: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+  blocked: "bg-destructive/15 text-destructive",
+  archived: "bg-secondary text-secondary-foreground",
   inactive: "bg-secondary text-secondary-foreground",
   fired: "bg-destructive/15 text-destructive",
 };
+
+const FILTERS: Array<{ id: "all" | EmployeeStatus; label: string }> = [
+  { id: "all", label: "Все" },
+  { id: "pending", label: "На проверке" },
+  { id: "active", label: "Активные" },
+  { id: "blocked", label: "Заблокированные" },
+  { id: "archived", label: "Архив" },
+];
 
 const TELEGRAM_BOT_USERNAME = "mado_ibot";
 
@@ -33,7 +49,7 @@ type FormValue = {
   role_id: string;
   primary_branch_id: string;
   additional_branch_ids: string[];
-  status: "active" | "inactive" | "fired";
+  status: EmployeeStatus;
 };
 
 function EmployeeDialog({
@@ -89,7 +105,7 @@ function EmployeeDialog({
       <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4 sticky top-0 bg-card">
           <h2 className="text-lg font-semibold">{title}</h2>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl cursor-pointer">✕</button>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4 p-5">
           <div className="space-y-1.5">
@@ -124,7 +140,7 @@ function EmployeeDialog({
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-sm font-medium">Основной филиал</label>
+            <label className="text-sm font-medium">Ресторан (основной филиал)</label>
             <select
               className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
               value={value.primary_branch_id}
@@ -143,7 +159,7 @@ function EmployeeDialog({
                   const checked = value.additional_branch_ids.includes(String(b.id));
                   return (
                     <label key={b.id} className="flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
-                      <input type="checkbox" checked={checked} onChange={() => toggleBranch(String(b.id))} className="accent-primary" />
+                      <input type="checkbox" checked={checked} onChange={() => toggleBranch(String(b.id))} className="accent-primary cursor-pointer" />
                       {b.name}
                     </label>
                   );
@@ -159,19 +175,137 @@ function EmployeeDialog({
                 value={value.status}
                 onChange={(e) => setValue((v) => ({ ...v, status: e.target.value as FormValue["status"] }))}
               >
-                <option value="active">Активен</option>
-                <option value="inactive">Неактивен</option>
-                <option value="fired">Уволен</option>
+                <option value="active">🟢 Активен</option>
+                <option value="blocked">🔴 Заблокирован</option>
+                <option value="archived">⚪ Архив</option>
               </select>
             </div>
           )}
           <div className="flex gap-2 justify-end pt-2">
-            <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
-            <button type="submit" disabled={submitting} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
+            <button type="button" onClick={onClose} className="cursor-pointer rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
+            <button type="submit" disabled={submitting} className="cursor-pointer rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
               {submitting ? "Сохраняем..." : "Сохранить"}
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function ApproveDialog({
+  employee,
+  roles,
+  branches,
+  onClose,
+  onSubmit,
+}: {
+  employee: Employee;
+  roles: Array<{ id: number; name_ru: string }>;
+  branches: Array<{ id: number; name: string }>;
+  onClose: () => void;
+  onSubmit: (roleId: number, branchId: number) => Promise<void>;
+}) {
+  const [roleId, setRoleId] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roleId || !branchId) {
+      toast.error("Выберите ресторан и должность");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSubmit(Number(roleId), Number(branchId));
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h2 className="text-lg font-semibold">Подтвердить сотрудника</h2>
+          <button type="button" onClick={onClose} className="cursor-pointer text-muted-foreground hover:text-foreground text-xl">✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4 p-5">
+          <p className="text-sm text-muted-foreground">
+            Назначьте ресторан и должность для <strong>{employee.full_name}</strong>, чтобы дать доступ к чек-листам.
+          </p>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Ресторан</label>
+            <select
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              value={branchId}
+              onChange={(e) => setBranchId(e.target.value)}
+              required
+            >
+              <option value="">Выберите ресторан</option>
+              {branches.map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Должность</label>
+            <select
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              value={roleId}
+              onChange={(e) => setRoleId(e.target.value)}
+              required
+            >
+              <option value="">Выберите должность</option>
+              {roles.map((r) => <option key={r.id} value={String(r.id)}>{r.name_ru}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2 justify-end pt-2">
+            <button type="button" onClick={onClose} className="cursor-pointer rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
+            <button type="submit" disabled={submitting} className="cursor-pointer rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50">
+              {submitting ? "Сохраняем..." : "Подтвердить"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function RejectDialog({
+  employee,
+  onClose,
+  onConfirm,
+  submitting,
+}: {
+  employee: Employee;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  submitting: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <h2 className="text-lg font-semibold">Отклонить заявку</h2>
+          <button type="button" onClick={onClose} className="cursor-pointer text-muted-foreground hover:text-foreground text-xl">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Заявка сотрудника <strong>{employee.full_name}</strong> будет удалена. Он сможет отправить новую заявку через бота позже.
+          </p>
+          <div className="flex gap-2 justify-end">
+            <button type="button" onClick={onClose} className="cursor-pointer rounded-lg border px-4 py-2 text-sm hover:bg-muted">Отмена</button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={submitting}
+              className="cursor-pointer rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {submitting ? "Отклоняем..." : "Отклонить"}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -189,7 +323,7 @@ function InviteDialog({
     mutationFn: () => regenerateInviteCode(employee.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
-  const [code, setCode] = useState(employee.invite_code);
+  const [code, setCode] = useState(employee.invite_code ?? "");
   const deepLink = `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${code}`;
 
   const handleCopy = async (text: string, successMsg: string) => {
@@ -216,7 +350,7 @@ function InviteDialog({
       <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-lg font-semibold">Вход через Telegram</h2>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
+          <button type="button" onClick={onClose} className="cursor-pointer text-muted-foreground hover:text-foreground text-xl">✕</button>
         </div>
         <div className="p-5 space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -226,7 +360,7 @@ function InviteDialog({
             <label className="text-xs font-medium text-muted-foreground">Ссылка на бота</label>
             <div className="flex items-center gap-2 rounded-lg border bg-muted p-3">
               <span className="flex-1 truncate text-sm">{deepLink}</span>
-              <button type="button" onClick={() => handleCopy(deepLink, "Ссылка скопирована")} className="text-muted-foreground hover:text-foreground p-1 rounded shrink-0">
+              <button type="button" onClick={() => handleCopy(deepLink, "Ссылка скопирована")} className="cursor-pointer text-muted-foreground hover:text-foreground p-1 rounded shrink-0">
                 <Copy className="size-4" />
               </button>
             </div>
@@ -235,7 +369,7 @@ function InviteDialog({
             <label className="text-xs font-medium text-muted-foreground">Или код приглашения (после /start в боте)</label>
             <div className="flex items-center gap-2 rounded-lg border bg-muted p-4">
               <span className="flex-1 text-center text-2xl font-bold tracking-widest">{code}</span>
-              <button type="button" onClick={() => handleCopy(code, "Код скопирован")} className="text-muted-foreground hover:text-foreground p-1 rounded">
+              <button type="button" onClick={() => handleCopy(code, "Код скопирован")} className="cursor-pointer text-muted-foreground hover:text-foreground p-1 rounded">
                 <Copy className="size-4" />
               </button>
             </div>
@@ -244,7 +378,7 @@ function InviteDialog({
             type="button"
             onClick={handleRegen}
             disabled={regenMut.isPending}
-            className="w-full rounded-lg border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
+            className="cursor-pointer w-full rounded-lg border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
           >
             {regenMut.isPending ? "Генерируем..." : "Сгенерировать новый код"}
           </button>
@@ -270,22 +404,22 @@ function UnlinkAccountDialog({
       <div className="w-full max-w-sm rounded-2xl border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-lg font-semibold">Отвязать аккаунт</h2>
-          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl">✕</button>
+          <button type="button" onClick={onClose} className="cursor-pointer text-muted-foreground hover:text-foreground text-xl">✕</button>
         </div>
         <div className="p-5 space-y-4">
           <p className="text-sm text-muted-foreground">
             Учётная запись, привязанная к сотруднику <strong>{employee.full_name}</strong>, будет отвязана. Сотрудник
             сможет привязать новый аккаунт по коду приглашения. Текущий вход для старого аккаунта перестанет работать.
           </p>
-          <div className="flex gap-2 justify-end pt-2">
-            <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">
+          <div className="flex gap-2 justify-end">
+            <button type="button" onClick={onClose} className="cursor-pointer rounded-lg border px-4 py-2 text-sm hover:bg-muted">
               Отмена
             </button>
             <button
               type="button"
               onClick={onConfirm}
               disabled={submitting}
-              className="rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              className="cursor-pointer rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? "Отвязываем..." : "Отвязать"}
             </button>
@@ -298,7 +432,17 @@ function UnlinkAccountDialog({
 
 export default function EmployeesPage() {
   const qc = useQueryClient();
-  const { data: employees, isLoading: empLoading } = useQuery({ queryKey: ["employees"], queryFn: () => listEmployees() });
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | EmployeeStatus>("all");
+
+  const { data: employees, isLoading: empLoading } = useQuery({
+    queryKey: ["employees", search, statusFilter],
+    queryFn: () =>
+      listEmployees({
+        q: search || undefined,
+        status: statusFilter === "all" ? undefined : statusFilter,
+      }),
+  });
   const { data: roles, isLoading: rolesLoading } = useQuery({ queryKey: ["roles"], queryFn: listRoles });
   const { data: branches, isLoading: branchesLoading } = useQuery({ queryKey: ["branches"], queryFn: listBranches });
 
@@ -310,6 +454,15 @@ export default function EmployeesPage() {
     mutationFn: ({ id, d }: { id: number; d: EmployeeUpdate }) => updateEmployee(id, d),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
+  const approveMut = useMutation({
+    mutationFn: ({ id, roleId, branchId }: { id: number; roleId: number; branchId: number }) =>
+      approveEmployee(id, { role_id: roleId, primary_branch_id: branchId, additional_branch_ids: [] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+  });
+  const rejectMut = useMutation({
+    mutationFn: (id: number) => rejectEmployee(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+  });
   const unlinkMut = useMutation({
     mutationFn: (id: number) => unlinkEmployeeAccount(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
@@ -319,6 +472,8 @@ export default function EmployeesPage() {
   const [editingEmp, setEditingEmp] = useState<Employee | null>(null);
   const [inviteEmp, setInviteEmp] = useState<Employee | null>(null);
   const [unlinkEmp, setUnlinkEmp] = useState<Employee | null>(null);
+  const [approveEmp, setApproveEmp] = useState<Employee | null>(null);
+  const [rejectEmp, setRejectEmp] = useState<Employee | null>(null);
 
   const roleOptions = useMemo(() => (roles ?? []).map((r) => ({ id: r.id, name_ru: r.name_ru })), [roles]);
   const branchOptions = useMemo(() => (branches ?? []).map((b) => ({ id: b.id, name: b.name })), [branches]);
@@ -369,6 +524,28 @@ export default function EmployeesPage() {
     }
   };
 
+  const handleApprove = async (roleId: number, branchId: number) => {
+    if (!approveEmp) return;
+    try {
+      await approveMut.mutateAsync({ id: approveEmp.id, roleId, branchId });
+      toast.success("Сотрудник подтверждён");
+    } catch {
+      toast.error("Не удалось подтвердить сотрудника");
+      throw new Error("approve failed");
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectEmp) return;
+    try {
+      await rejectMut.mutateAsync(rejectEmp.id);
+      toast.success("Заявка отклонена");
+      setRejectEmp(null);
+    } catch {
+      toast.error("Не удалось отклонить заявку");
+    }
+  };
+
   const handleUnlink = async () => {
     if (!unlinkEmp) return;
     try {
@@ -387,20 +564,50 @@ export default function EmployeesPage() {
   const loading = empLoading || rolesLoading || branchesLoading;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-4 md:p-8">
-      <div className="flex items-center justify-between gap-4">
+    <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-8">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Сотрудники</h1>
-          <p className="text-sm text-muted-foreground">Создавайте учётные записи и назначайте должности</p>
+          <p className="text-sm text-muted-foreground">
+            Все, кто писал боту, плюс сотрудники, добавленные вручную
+          </p>
         </div>
         <button
           type="button"
           onClick={() => setCreateOpen(true)}
           disabled={roleOptions.length === 0 || branchOptions.length === 0}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          className="cursor-pointer flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           <Plus className="size-4" />Сотрудник
         </button>
+      </div>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative w-full sm:max-w-xs">
+          <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            className="w-full rounded-lg border bg-background py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            placeholder="Поиск по имени, телефону, Telegram ID"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setStatusFilter(f.id)}
+              className={`cursor-pointer rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                statusFilter === f.id
+                  ? "bg-primary text-primary-foreground"
+                  : "border text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading ? (
@@ -412,72 +619,95 @@ export default function EmployeesPage() {
       ) : !employees || employees.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed py-16 text-center">
           <Users className="size-10 text-muted-foreground" />
-          <p className="font-semibold">Нет сотрудников</p>
-          <p className="text-sm text-muted-foreground">Добавьте первого сотрудника, чтобы начать</p>
-          <button type="button" onClick={() => setCreateOpen(true)} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">Добавить сотрудника</button>
+          <p className="font-semibold">Никого не найдено</p>
+          <p className="text-sm text-muted-foreground">
+            Измените поиск/фильтр или добавьте сотрудника вручную
+          </p>
+          <button type="button" onClick={() => setCreateOpen(true)} className="cursor-pointer rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90">Добавить сотрудника</button>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="px-4 py-3 text-left font-medium">ФИО</th>
-                <th className="px-4 py-3 text-left font-medium">Должность</th>
-                <th className="px-4 py-3 text-left font-medium">Филиал</th>
-                <th className="px-4 py-3 text-left font-medium">Статус</th>
-                <th className="px-4 py-3 text-left font-medium">Telegram</th>
-                <th className="px-4 py-3 text-left font-medium">Аккаунт</th>
-                <th className="px-4 py-3 text-right font-medium">Действия</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {employees.map((emp) => (
-                <tr key={emp.id} className="hover:bg-muted/30">
-                  <td className="px-4 py-3 font-medium">{emp.full_name}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{emp.role_name}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{emp.primary_branch_name}</td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLOR[emp.status]}`}>
-                      {STATUS_LABEL[emp.status]}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {employees.map((emp) => (
+            <div key={emp.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">{emp.full_name}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {emp.role_name ?? "Должность не назначена"}
+                    {emp.primary_branch_name ? ` · ${emp.primary_branch_name}` : ""}
+                  </p>
+                </div>
+                <span className={`shrink-0 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLOR[emp.status]}`}>
+                  {STATUS_LABEL[emp.status]}
+                </span>
+              </div>
+
+              <div className="space-y-1 text-xs text-muted-foreground">
+                {emp.phone && (
+                  <div className="flex items-center gap-1.5">
+                    <Phone className="size-3" />
+                    <span>{emp.phone}</span>
+                  </div>
+                )}
+                {emp.telegram_id && (
+                  <div className="flex items-center gap-1.5">
+                    <Send className="size-3" />
+                    <span>
+                      {emp.telegram_username ? `@${emp.telegram_username}` : "Telegram"} · ID {emp.telegram_id}
                     </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${emp.telegram_linked ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
-                      <Send className="size-3" />
-                      {emp.telegram_linked ? "Привязан" : "Не привязан"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${emp.has_claimed_account ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
-                      {emp.has_claimed_account ? "Привязан" : "Не привязан"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-1">
-                      {!emp.telegram_linked && (
-                        <button type="button" onClick={() => setInviteEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Приглашение в Telegram">
-                          <KeyRound className="size-4" />
-                        </button>
-                      )}
-                      {emp.has_claimed_account && (
-                        <button
-                          type="button"
-                          onClick={() => setUnlinkEmp(emp)}
-                          className="rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title="Отвязать аккаунт"
-                        >
-                          <Unlink className="size-4" />
-                        </button>
-                      )}
-                      <button type="button" onClick={() => setEditingEmp(emp)} className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Редактировать">
-                        <Pencil className="size-4" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${emp.has_claimed_account ? "bg-secondary text-secondary-foreground" : "border text-muted-foreground"}`}>
+                  {emp.has_claimed_account ? "Веб-аккаунт привязан" : "Веб-аккаунт не привязан"}
+                </span>
+              </div>
+
+              <div className="mt-auto flex flex-wrap justify-end gap-1.5 pt-2">
+                {emp.status === "pending" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setRejectEmp(emp)}
+                      className="cursor-pointer flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                    >
+                      <X className="size-3.5" />Отклонить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setApproveEmp(emp)}
+                      className="cursor-pointer flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
+                    >
+                      <Check className="size-3.5" />Подтвердить
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {!emp.telegram_linked && (
+                      <button type="button" onClick={() => setInviteEmp(emp)} className="cursor-pointer rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Приглашение в Telegram">
+                        <KeyRound className="size-4" />
                       </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    )}
+                    {emp.has_claimed_account && (
+                      <button
+                        type="button"
+                        onClick={() => setUnlinkEmp(emp)}
+                        className="cursor-pointer rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        title="Отвязать аккаунт"
+                      >
+                        <Unlink className="size-4" />
+                      </button>
+                    )}
+                    <button type="button" onClick={() => setEditingEmp(emp)} className="cursor-pointer rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Редактировать">
+                      <Pencil className="size-4" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -499,8 +729,8 @@ export default function EmployeesPage() {
           initial={{
             full_name: editingEmp.full_name,
             phone: editingEmp.phone ?? "",
-            role_id: String(editingEmp.role_id),
-            primary_branch_id: String(editingEmp.primary_branch_id),
+            role_id: String(editingEmp.role_id ?? ""),
+            primary_branch_id: String(editingEmp.primary_branch_id ?? ""),
             additional_branch_ids: editingEmp.additional_branch_ids.map(String),
             status: editingEmp.status,
           }}
@@ -509,6 +739,25 @@ export default function EmployeesPage() {
           onSubmit={handleUpdate}
           title="Изменить сотрудника"
           showStatus
+        />
+      )}
+
+      {approveEmp && (
+        <ApproveDialog
+          employee={approveEmp}
+          roles={roleOptions}
+          branches={branchOptions}
+          onClose={() => setApproveEmp(null)}
+          onSubmit={handleApprove}
+        />
+      )}
+
+      {rejectEmp && (
+        <RejectDialog
+          employee={rejectEmp}
+          onClose={() => setRejectEmp(null)}
+          onConfirm={handleReject}
+          submitting={rejectMut.isPending}
         />
       )}
 
