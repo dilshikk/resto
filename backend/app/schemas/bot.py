@@ -17,6 +17,32 @@ class BotResyncRequest(BaseModel):
     telegram_id: int
 
 
+class BotRegisterRequest(BaseModel):
+    """
+    Body for POST /bot/register — self-service registration triggered by
+    /start when the telegram_id has never been seen before. Creates a new
+    employee record with status="pending" and no role/branch; a manager
+    assigns those on confirmation (see EmployeeApprove).
+    """
+    telegram_id: int
+    full_name: str
+    username: str | None = None
+    phone: str | None = None
+
+
+class BotStatusOut(BaseModel):
+    """
+    Response for GET /bot/status — lets the bot decide what to show on
+    /start without needing a per-employee token yet (a "pending" or
+    "blocked" employee never has one).
+    """
+    status: str  # not_registered | pending | active | blocked | archived | inactive | fired
+    full_name: str | None = None
+    role_name: str | None = None
+    primary_branch_name: str | None = None
+    preferred_language: str = "ru"
+
+
 class BotEmployeeOut(BaseModel):
     id: int
     full_name: str
@@ -50,6 +76,8 @@ class BotSkipRequest(BaseModel):
 __all__ = [
     "BotLinkRequest",
     "BotResyncRequest",
+    "BotRegisterRequest",
+    "BotStatusOut",
     "BotLinkResponse",
     "BotEmployeeOut",
     "BotToggleRequest",

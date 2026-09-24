@@ -16,16 +16,29 @@ class Employee(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(30))
-    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    # Nullable: a self-registered (Telegram-first) employee starts with
+    # status="pending" and no role/branch until a manager approves them
+    # via POST /employees/{id}/approve.
+    role_id: Mapped[int | None] = mapped_column(ForeignKey("roles.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    invite_code: Mapped[str] = mapped_column(String(8), nullable=False)
-    # Set once the employee links their account in the Telegram bot via /start + invite code
+    # Nullable for the same reason as role_id — self-registered employees
+    # never go through the /bot/link invite-code flow, so they have none.
+    invite_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Set once the employee links their account in the Telegram bot, either
+    # via /start + invite code (manager-first flow) or by self-registering
+    # (bot-first flow — see POST /bot/register).
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
-    primary_branch_id: Mapped[int] = mapped_column(ForeignKey("branches.id"), nullable=False)
+    # Telegram @username captured at self-registration time. Display-only,
+    # never used for authentication (telegram_id is the source of truth).
+    telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    primary_branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
     additional_branch_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
     hired_at: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
     # Preferred UI language for the Telegram bot: "ru" | "uz" | "en"
     preferred_language: Mapped[str] = mapped_column(String(5), nullable=False, default="ru")
+    # Last time the employee interacted with the bot (checklist toggle/skip,
+    # photo upload, etc). Updated opportunistically, not on every request.
+    last_activity_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -40,7 +53,7 @@ class Employee(Base):
 
 
 class EmployeeAccount(Base):
-    """\u0421\u0432\u044f\u0437\u044c employee <-> user (\u0432\u0435\u0431-\u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u0430)."""
+    """Связь employee <-> user (веб-аккаунт менеджера)."""
     __tablename__ = "employee_accounts"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
