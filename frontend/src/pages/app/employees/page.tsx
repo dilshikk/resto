@@ -7,13 +7,15 @@ import {
   updateEmployee,
   approveEmployee,
   rejectEmployee,
+  deleteEmployee,
   regenerateInviteCode,
   unlinkEmployeeAccount,
   listRoles,
 } from "@/api/employees.ts";
 import type { Employee, EmployeeCreate, EmployeeUpdate, EmployeeStatus } from "@/api/employees.ts";
 import { listBranches } from "@/api/branches.ts";
-import { Users, Plus, KeyRound, Copy, Pencil, Send, Unlink, Search, Check, X, Phone } from "lucide-react";
+import { Users, Plus, KeyRound, Copy, Pencil, Send, Unlink, Search, Check, X, Phone, Trash2 } from "lucide-react";
+import DeleteEmployeeDialog from "./delete-employee-dialog.tsx";
 
 const STATUS_LABEL: Record<EmployeeStatus, string> = {
   pending: "🟡 На проверке",
@@ -430,6 +432,12 @@ function UnlinkAccountDialog({
   );
 }
 
+function getErrorDetail(err: unknown): string | undefined {
+  return err && typeof err === "object" && "response" in err
+    ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+    : undefined;
+}
+
 export default function EmployeesPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
@@ -463,6 +471,10 @@ export default function EmployeesPage() {
     mutationFn: (id: number) => rejectEmployee(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
   });
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => deleteEmployee(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
+  });
   const unlinkMut = useMutation({
     mutationFn: (id: number) => unlinkEmployeeAccount(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employees"] }),
@@ -474,6 +486,7 @@ export default function EmployeesPage() {
   const [unlinkEmp, setUnlinkEmp] = useState<Employee | null>(null);
   const [approveEmp, setApproveEmp] = useState<Employee | null>(null);
   const [rejectEmp, setRejectEmp] = useState<Employee | null>(null);
+  const [deleteEmp, setDeleteEmp] = useState<Employee | null>(null);
 
   const roleOptions = useMemo(() => (roles ?? []).map((r) => ({ id: r.id, name_ru: r.name_ru })), [roles]);
   const branchOptions = useMemo(() => (branches ?? []).map((b) => ({ id: b.id, name: b.name })), [branches]);
@@ -546,6 +559,21 @@ export default function EmployeesPage() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!deleteEmp) return;
+    try {
+      const res = await deleteMut.mutateAsync(deleteEmp.id);
+      toast.success(
+        res.mode === "deleted"
+          ? "Сотрудник удалён"
+          : "Сотрудник отвязан от Telegram и перенесён в архив (есть история)",
+      );
+      setDeleteEmp(null);
+    } catch (err: unknown) {
+      toast.error(getErrorDetail(err) ?? "Не удалось удалить сотрудника");
+    }
+  };
+
   const handleUnlink = async () => {
     if (!unlinkEmp) return;
     try {
@@ -553,11 +581,7 @@ export default function EmployeesPage() {
       toast.success("Аккаунт отвязан");
       setUnlinkEmp(null);
     } catch (err: unknown) {
-      const detail =
-        err && typeof err === "object" && "response" in err
-          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : undefined;
-      toast.error(detail ?? "Не удалось отвязать аккаунт. Возможно, у вас недостаточно прав.");
+      toast.error(getErrorDetail(err) ?? "Не удалось отвязать аккаунт. Возможно, у вас недостаточно прав.");
     }
   };
 
@@ -703,6 +727,14 @@ export default function EmployeesPage() {
                     <button type="button" onClick={() => setEditingEmp(emp)} className="cursor-pointer rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Редактировать">
                       <Pencil className="size-4" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteEmp(emp)}
+                      className="cursor-pointer rounded p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      title="Удалить"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
                   </>
                 )}
               </div>
@@ -758,6 +790,15 @@ export default function EmployeesPage() {
           onClose={() => setRejectEmp(null)}
           onConfirm={handleReject}
           submitting={rejectMut.isPending}
+        />
+      )}
+
+      {deleteEmp && (
+        <DeleteEmployeeDialog
+          employee={deleteEmp}
+          onClose={() => setDeleteEmp(null)}
+          onConfirm={handleDelete}
+          submitting={deleteMut.isPending}
         />
       )}
 
