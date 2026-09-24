@@ -32,6 +32,8 @@ from app.schemas.bot import (
     BotLinkRequest,
     BotLinkResponse,
     BotResyncRequest,
+    BotRegisterRequest,
+    BotStatusOut,
     BotSkipRequest,
     BotToggleRequest,
 )
@@ -86,7 +88,7 @@ async def get_employee_by_bot_token(
     if not emp or emp.status != "active":
         raise HTTPException(
             status_code=401,
-            detail="\u041d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u0438\u043b\u0438 \u043e\u0442\u043e\u0437\u0432\u0430\u043d\u043d\u044b\u0439 \u0442\u043e\u043a\u0435\u043d \u0431\u043e\u0442\u0430. \u0421\u0432\u044f\u0436\u0438\u0442\u0435\u0441\u044c \u0437\u0430\u043d\u043e\u0432\u043e \u0447\u0435\u0440\u0435\u0437 /start.",
+            detail="Недействительный или отозванный токен бота. Свяжитесь заново через /start.",
         )
     return emp
 
@@ -113,8 +115,12 @@ def _pick_role_name(role: Role | None, lang: str) -> str:
 
 
 async def _to_bot_employee_out(emp: Employee, db: AsyncSession) -> BotEmployeeOut:
-    role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
-    branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
+    role = None
+    if emp.role_id is not None:
+        role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
+    branch = None
+    if emp.primary_branch_id is not None:
+        branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
     lang = emp.preferred_language or "ru"
     return BotEmployeeOut(
         id=emp.id,
@@ -138,6 +144,101 @@ def _issue_session_token(emp: Employee) -> str:
     return plaintext_token
 
 
+# ── Self-service registration (no invite code, no per-employee token yet) ──────────
+
+@router.post("/register", response_model=BotStatusOut)
+async def register_via_bot(
+    body: BotRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Called by the bot on /start when this telegram_id has never been seen
+    before (GET /bot/status returned "not_registered") and the employee has
+    just shared their contact.
+
+    Creates a new employees row with status="pending" and no role/branch —
+    a manager reviews it in the "Сотрудники" screen and either approves it
+    (POST /employees/{id}/approve, assigning restaurant + position) or
+    rejects it (POST /employees/{id}/reject).
+
+    Unlike POST /bot/link, this does NOT issue a bot_session_token: a
+    "pending" employee has no checklist access yet, so there is nothing for
+    the bot to authenticate with until a manager approves the request.
+    """
+    existing = (
+        await db.execute(select(Employee).where(Employee.telegram_id == body.telegram_id))
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Этот Telegram уже зарегистрирован")
+
+    emp = Employee(
+        full_name=body.full_name.strip(),
+        phone=body.phone,
+        status="pending",
+        telegram_id=body.telegram_id,
+        telegram_username=body.username,
+        additional_branch_ids=[],
+        preferred_language="ru",
+    )
+    db.add(emp)
+    await db.flush()
+
+    await log_action(
+        db,
+        actor_id=None,
+        action="employee.self_registered",
+        entity_type="employee",
+        entity_id=emp.id,
+        metadata={"employee_id": emp.id},
+    )
+    await db.commit()
+    await db.refresh(emp)
+
+    return BotStatusOut(
+        status="pending",
+        full_name=emp.full_name,
+        role_name=None,
+        primary_branch_name=None,
+        preferred_language=emp.preferred_language or "ru",
+    )
+
+
+@router.get("/status", response_model=BotStatusOut)
+async def get_registration_status(
+    telegram_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Called by the bot on /start (before it has a per-employee token) to
+    decide what to show:
+      - not_registered — never seen this telegram_id: ask to share contact
+      - pending         — awaiting manager review: show a waiting message
+      - blocked/archived/inactive/fired — show a status message
+      - active          — bot should proceed to greet/link normally
+    """
+    emp = (
+        await db.execute(select(Employee).where(Employee.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+    if not emp:
+        return BotStatusOut(status="not_registered", preferred_language="ru")
+
+    role = None
+    if emp.role_id is not None:
+        role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
+    branch = None
+    if emp.primary_branch_id is not None:
+        branch = (await db.execute(select(Branch).where(Branch.id == emp.primary_branch_id))).scalar_one_or_none()
+    lang = emp.preferred_language or "ru"
+
+    return BotStatusOut(
+        status=emp.status,
+        full_name=emp.full_name,
+        role_name=_pick_role_name(role, lang) if role else None,
+        primary_branch_name=branch.name if branch else None,
+        preferred_language=lang,
+    )
+
+
 # ── Link endpoint (no per-employee token yet) ──────────────────────────────────────
 
 @router.post("/link", response_model=BotLinkResponse)
@@ -156,16 +257,16 @@ async def link_telegram_account(
         await db.execute(select(Employee).where(Employee.telegram_id == body.telegram_id))
     ).scalar_one_or_none()
     if already_linked:
-        raise HTTPException(status_code=409, detail="\u042d\u0442\u043e\u0442 Telegram \u0443\u0436\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0443")
+        raise HTTPException(status_code=409, detail="Этот Telegram уже привязан к сотруднику")
 
     code = body.invite_code.strip().upper()
     target = (await db.execute(select(Employee).where(Employee.invite_code == code))).scalar_one_or_none()
     if not target:
-        raise HTTPException(status_code=404, detail="\u041a\u043e\u0434 \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Код приглашения не найден")
     if target.status != "active":
-        raise HTTPException(status_code=403, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0434\u0435\u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d")
+        raise HTTPException(status_code=403, detail="Сотрудник деактивирован")
     if target.telegram_id is not None:
-        raise HTTPException(status_code=409, detail="\u042d\u0442\u043e\u0442 \u043f\u0440\u043e\u0444\u0438\u043b\u044c \u0443\u0436\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a \u0434\u0440\u0443\u0433\u043e\u043c\u0443 Telegram")
+        raise HTTPException(status_code=409, detail="Этот профиль уже привязан к другому Telegram")
 
     # Issue a per-employee bot session token.  Only the hash is stored;
     # the plaintext is returned once and never logged.
@@ -219,9 +320,9 @@ async def resync_telegram_account(
         await db.execute(select(Employee).where(Employee.telegram_id == body.telegram_id))
     ).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u041f\u0440\u043e\u0444\u0438\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d \u0438\u043b\u0438 \u043d\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d")
+        raise HTTPException(status_code=404, detail="Профиль не найден или не привязан")
     if emp.status != "active":
-        raise HTTPException(status_code=403, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0434\u0435\u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d")
+        raise HTTPException(status_code=403, detail="Сотрудник деактивирован")
 
     plaintext_token = _issue_session_token(emp)
 
@@ -293,7 +394,7 @@ async def get_my_current_item(
 
     cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
     if not cl:
-        raise HTTPException(status_code=404, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
         return None
 
@@ -358,7 +459,7 @@ async def get_item(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Пункт не найден")
     outs = await _build_items_batch([item], db)
     return outs[0]
 
@@ -373,9 +474,9 @@ async def toggle_item(
 ):
     cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
     if not cl:
-        raise HTTPException(status_code=404, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
-        raise HTTPException(status_code=400, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d")
+        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
     item = (
         await db.execute(
@@ -385,7 +486,7 @@ async def toggle_item(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Пункт не найден")
 
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
@@ -405,6 +506,8 @@ async def toggle_item(
         item.completed_by_employee_id = None
         item.completed_at = None
         item.note = None
+
+    emp.last_activity_at = datetime.now(timezone.utc)
 
     await log_action(
         db,
@@ -428,9 +531,9 @@ async def skip_item(
 ):
     cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
     if not cl:
-        raise HTTPException(status_code=404, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
-        raise HTTPException(status_code=400, detail="\u0427\u0435\u043a-\u043b\u0438\u0441\u0442 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d")
+        raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
     item = (
         await db.execute(
@@ -440,11 +543,11 @@ async def skip_item(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Пункт не найден")
     if item.is_required:
-        raise HTTPException(status_code=400, detail="\u042d\u0442\u043e\u0442 \u043f\u0443\u043d\u043a\u0442 \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u0435\u043d \u0438 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043f\u0440\u043e\u043f\u0443\u0449\u0435\u043d")
+        raise HTTPException(status_code=400, detail="Этот пункт обязателен и не может быть пропущен")
     if item.is_completed:
-        raise HTTPException(status_code=400, detail="\u041f\u0443\u043d\u043a\u0442 \u0443\u0436\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d")
+        raise HTTPException(status_code=400, detail="Пункт уже выполнен")
 
     items = await _get_ordered_items(checklist_id, db)
     await _assert_previous_required_done(item, items)
@@ -452,6 +555,8 @@ async def skip_item(
     item.is_skipped = True
     if body.note:
         item.note = body.note
+
+    emp.last_activity_at = datetime.now(timezone.utc)
 
     await log_action(
         db, actor_id=emp.id, action="task.skipped", entity_type="checklist_item", entity_id=item.id,
@@ -478,7 +583,7 @@ async def upload_item_photo(
         )
     ).scalar_one_or_none()
     if not emp or emp.status != "active":
-        raise HTTPException(status_code=401, detail="\u041d\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439 \u0438\u043b\u0438 \u043e\u0442\u043e\u0437\u0432\u0430\u043d\u043d\u044b\u0439 \u0442\u043e\u043a\u0435\u043d \u0431\u043e\u0442\u0430")
+        raise HTTPException(status_code=401, detail="Недействительный или отозванный токен бота")
 
     item = (
         await db.execute(
@@ -488,18 +593,18 @@ async def upload_item_photo(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Пункт не найден")
 
     content_type = (file.content_type or "").lower()
     if content_type not in _ALLOWED_IMAGE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"\u041d\u0435\u0434\u043e\u043f\u0443\u0441\u0442\u0438\u043c\u044b\u0439 \u0442\u0438\u043f \u0444\u0430\u0439\u043b\u0430 \u00ab{content_type}\u00bb. \u0420\u0430\u0437\u0440\u0435\u0448\u0435\u043d\u044b: JPEG, PNG, WebP, GIF.",
+            detail=f"Недопустимый тип файла «{content_type}». Разрешены: JPEG, PNG, WebP, GIF.",
         )
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail=f"\u0424\u0430\u0439\u043b \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u0431\u043e\u043b\u044c\u0448\u043e\u0439 (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
+        raise HTTPException(status_code=400, detail=f"Файл слишком большой (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
 
     ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
@@ -512,6 +617,8 @@ async def upload_item_photo(
     )
     db.add(photo)
     await db.flush()
+
+    emp.last_activity_at = datetime.now(timezone.utc)
 
     await log_action(
         db, actor_id=emp.id, action="photo.uploaded", entity_type="checklist_item", entity_id=item.id,
@@ -541,7 +648,7 @@ async def delete_item_photo(
         )
     ).scalar_one_or_none()
     if not item:
-        raise HTTPException(status_code=404, detail="\u041f\u0443\u043d\u043a\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Пункт не найден")
 
     photo = (
         await db.execute(
@@ -549,14 +656,14 @@ async def delete_item_photo(
         )
     ).scalar_one_or_none()
     if not photo:
-        raise HTTPException(status_code=404, detail="\u0424\u043e\u0442\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e")
+        raise HTTPException(status_code=404, detail="Фото не найдено")
 
     if photo.uploaded_by_employee_id != emp.id:
         role = (
             await db.execute(select(Role).where(Role.id == emp.role_id))
         ).scalar_one_or_none()
         if not role or role.permission_level < 1:
-            raise HTTPException(status_code=403, detail="\u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u0430\u0432")
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     original_uploader_id = photo.uploaded_by_employee_id
     await db.delete(photo)
