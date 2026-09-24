@@ -12,28 +12,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # NOTE: these scripts run ONLY when the database volume is empty.
-      # For an existing database apply new migrations manually, e.g.:
-      #   docker compose exec -T db psql -U mado -d mado_checklist < backend/migrations/018_roles_branches_bot_token.sql
-      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql
-      - ./backend/migrations/002_checklists.sql:/docker-entrypoint-initdb.d/002_checklists.sql
-      - ./backend/migrations/003_issues.sql:/docker-entrypoint-initdb.d/003_issues.sql
-      - ./backend/migrations/004_shifts_notifications.sql:/docker-entrypoint-initdb.d/004_shifts_notifications.sql
-      - ./backend/migrations/005_photos.sql:/docker-entrypoint-initdb.d/005_photos.sql
-      - ./backend/migrations/006_standards.sql:/docker-entrypoint-initdb.d/006_standards.sql
-      - ./backend/migrations/007_audit_logs.sql:/docker-entrypoint-initdb.d/007_audit_logs.sql
-      - ./backend/migrations/008_checklist_item_skip.sql:/docker-entrypoint-initdb.d/008_checklist_item_skip.sql
-      - ./backend/migrations/009_telegram.sql:/docker-entrypoint-initdb.d/009_telegram.sql
-      - ./backend/migrations/010_revoked_tokens.sql:/docker-entrypoint-initdb.d/010_revoked_tokens.sql
-      - ./backend/migrations/011_checklist_deadlines.sql:/docker-entrypoint-initdb.d/011_checklist_deadlines.sql
-      - ./backend/migrations/012_2fa_totp.sql:/docker-entrypoint-initdb.d/012_2fa_totp.sql
-      - ./backend/migrations/013_photo_comment_requirements.sql:/docker-entrypoint-initdb.d/013_photo_comment_requirements.sql
-      - ./backend/migrations/014_checklist_item_requirements.sql:/docker-entrypoint-initdb.d/014_checklist_item_requirements.sql
-      - ./backend/migrations/015_checklist_escalation.sql:/docker-entrypoint-initdb.d/015_checklist_escalation.sql
-      - ./backend/migrations/016_i18n.sql:/docker-entrypoint-initdb.d/016_i18n.sql
-      - ./backend/migrations/017_task_types.sql:/docker-entrypoint-initdb.d/017_task_types.sql
-      - ./backend/migrations/018_roles_branches_bot_token.sql:/docker-entrypoint-initdb.d/018_roles_branches_bot_token.sql
-      - ./backend/migrations/019_template_role_ids.sql:/docker-entrypoint-initdb.d/019_template_role_ids.sql
+      # Schema is managed by the `migrate` service below (not initdb scripts),
+      # so new migrations are applied to existing databases as well.
     ports:
       - "5433:5432"
     healthcheck:
@@ -41,6 +21,24 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot job: applies pending SQL files from backend/migrations and exits.
+  # Runs automatically on every `docker compose up`. Manual run:
+  #   docker compose run --rm migrate
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: migrate/Dockerfile
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: mado
+      PGDATABASE: mado_checklist
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
 
   backend:
     build:
@@ -66,6 +64,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Backend starts only after the schema is up to date.
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
 
