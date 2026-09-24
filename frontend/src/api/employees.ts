@@ -8,21 +8,33 @@ export type Role = {
   permission_level: number;
 };
 
+// "pending"  — self-registered via Telegram, awaiting manager review
+// "active"   — confirmed, has checklist access
+// "blocked"  — access revoked (worked before)
+// "archived" — no longer works here
+// "inactive"/"fired" are legacy values kept for backward compatibility with
+// employees created before self-registration existed.
+export type EmployeeStatus = "pending" | "active" | "blocked" | "archived" | "inactive" | "fired";
+
 export type Employee = {
   id: number;
   full_name: string;
   phone?: string;
-  role_id: number;
-  role_name: string;
+  // Optional: a self-registered ("pending") employee has no role/branch yet.
+  role_id: number | null;
+  role_name: string | null;
   role_level: number;
-  primary_branch_id: number;
-  primary_branch_name: string;
+  primary_branch_id: number | null;
+  primary_branch_name: string | null;
   additional_branch_ids: number[];
-  status: "active" | "inactive" | "fired";
-  invite_code: string;
+  status: EmployeeStatus;
+  invite_code: string | null;
   has_claimed_account: boolean;
   telegram_linked: boolean;
+  telegram_id: number | null;
+  telegram_username?: string;
   hired_at?: string;
+  last_activity_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -37,13 +49,20 @@ export type EmployeeCreate = {
 };
 
 export type EmployeeUpdate = EmployeeCreate & {
-  status: "active" | "inactive" | "fired";
+  status: EmployeeStatus;
+};
+
+export type EmployeeApprove = {
+  role_id: number;
+  primary_branch_id: number;
+  additional_branch_ids: number[];
+  hired_at?: string;
 };
 
 export type MyProfile = {
   id: number;
   full_name: string;
-  status: "active" | "inactive" | "fired";
+  status: EmployeeStatus;
   role_id: number;
   role_name: string;
   role_code: string;
@@ -53,9 +72,17 @@ export type MyProfile = {
   additional_branch_ids: number[];
 };
 
-export async function listEmployees(branchId?: number): Promise<Employee[]> {
+export async function listEmployees(params?: {
+  branchId?: number;
+  q?: string;
+  status?: EmployeeStatus;
+}): Promise<Employee[]> {
   const res = await apiClient.get<Employee[]>("/employees", {
-    params: branchId ? { branch_id: branchId } : undefined,
+    params: {
+      branch_id: params?.branchId,
+      q: params?.q || undefined,
+      status: params?.status,
+    },
   });
   return res.data;
 }
@@ -68,6 +95,15 @@ export async function createEmployee(data: EmployeeCreate): Promise<Employee> {
 export async function updateEmployee(id: number, data: EmployeeUpdate): Promise<Employee> {
   const res = await apiClient.patch<Employee>(`/employees/${id}`, data);
   return res.data;
+}
+
+export async function approveEmployee(id: number, data: EmployeeApprove): Promise<Employee> {
+  const res = await apiClient.post<Employee>(`/employees/${id}/approve`, data);
+  return res.data;
+}
+
+export async function rejectEmployee(id: number): Promise<void> {
+  await apiClient.post(`/employees/${id}/reject`);
 }
 
 export async function regenerateInviteCode(id: number): Promise<{ invite_code: string }> {
