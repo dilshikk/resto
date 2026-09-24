@@ -6,7 +6,8 @@ from aiogram.types import Message
 from app import api_client
 from app.api_client import ApiError
 from app.i18n import get_lang, t
-from app.states import LinkStates
+from app.keyboards import remove_keyboard, share_contact_keyboard
+from app.states import LinkStates, RegisterStates
 
 router = Router(name="link")
 
@@ -21,6 +22,63 @@ async def _greet_linked_employee(message: Message, telegram_id: int, lang: str) 
           role=me["role_name"],
           branch=me["primary_branch_name"])
     )
+
+
+async def _handle_unlinked_start(
+    message: Message, telegram_id: int, code: str, state: FSMContext, lang: str
+) -> None:
+    """
+    Reached when the employee has no valid bot session token yet (never
+    linked, or 401/404 from _greet_linked_employee).
+
+    - If a deep-link invite code was supplied, keep the existing
+      manager-first flow: try to link immediately.
+    - Otherwise, ask the backend for this telegram_id's registration status
+      and branch on it:
+        not_registered -> self-service registration (share contact)
+        pending/blocked/archived/inactive/fired -> show a status message
+        active -> should not happen here (means a stale/missing token);
+                  fall back to greeting via /bot/resync through get_me.
+    """
+    if code:
+        await _try_link(message, telegram_id, code, state, lang)
+        return
+
+    try:
+        status = await api_client.get_registration_status(telegram_id)
+    except ApiError as e:
+        await message.answer(t("error_generic", lang, detail=e.detail))
+        return
+
+    reg_status = status.get("status")
+    status_lang = status.get("preferred_language") or lang
+    name = status.get("full_name") or ""
+
+    if reg_status == "not_registered":
+        await state.set_state(RegisterStates.waiting_for_contact)
+        await message.answer(
+            t("ask_share_contact", status_lang),
+            reply_markup=share_contact_keyboard(status_lang),
+        )
+        return
+
+    if reg_status == "pending":
+        await message.answer(t("status_pending", status_lang, name=name))
+        return
+
+    if reg_status in ("blocked", "inactive", "fired"):
+        await message.answer(t("status_blocked", status_lang, name=name))
+        return
+
+    if reg_status == "archived":
+        await message.answer(t("status_archived", status_lang, name=name))
+        return
+
+    # reg_status == "active" but we still couldn't greet (e.g. a race right
+    # after approval, before the bot has a session token). Ask the employee
+    # to send /start again so _greet_linked_employee's resync path can run.
+    await state.set_state(LinkStates.waiting_for_code)
+    await message.answer(t("ask_for_code", lang))
 
 
 @router.message(CommandStart(deep_link=True))
@@ -39,12 +97,7 @@ async def start_with_code(message: Message, command: CommandObject, state: FSMCo
             await message.answer(t("error_generic", lang, detail=e.detail))
             return
 
-    if not code:
-        await state.set_state(LinkStates.waiting_for_code)
-        await message.answer(t("ask_for_code", lang))
-        return
-
-    await _try_link(message, telegram_id, code, state, lang)
+    await _handle_unlinked_start(message, telegram_id, code, state, lang)
 
 
 @router.message(CommandStart())
@@ -59,8 +112,7 @@ async def start_plain(message: Message, state: FSMContext) -> None:
             await message.answer(t("error_generic", lang, detail=e.detail))
             return
 
-    await state.set_state(LinkStates.waiting_for_code)
-    await message.answer(t("ask_for_code", lang))
+    await _handle_unlinked_start(message, telegram_id, "", state, lang)
 
 
 @router.message(LinkStates.waiting_for_code, F.text)
@@ -105,3 +157,46 @@ async def _try_link(
           role=result["role_name"],
           branch=result["primary_branch_name"])
     )
+
+
+# ── Self-service registration: contact-sharing step ─────────────────────────
+
+@router.message(RegisterStates.waiting_for_contact, F.contact)
+async def receive_contact(message: Message, state: FSMContext) -> None:
+    """
+    Employee tapped "Share contact". Telegram guarantees message.contact
+    belongs to the sender when it comes from the native request_contact
+    button, so we trust its phone_number/user_id here.
+    """
+    telegram_id = message.from_user.id
+    lang = get_lang(message.from_user.language_code)
+    contact = message.contact
+
+    full_name = " ".join(
+        part for part in (contact.first_name, contact.last_name) if part
+    ).strip() or (message.from_user.full_name or "Без имени")
+
+    try:
+        result = await api_client.register_account(
+            telegram_id=telegram_id,
+            full_name=full_name,
+            username=message.from_user.username,
+            phone=contact.phone_number,
+        )
+    except ApiError as e:
+        await message.answer(t("registration_error", lang, detail=e.detail), reply_markup=remove_keyboard())
+        return
+
+    await state.clear()
+    reg_lang = result.get("preferred_language") or lang
+    await message.answer(
+        t("registration_pending", reg_lang, name=result.get("full_name") or full_name),
+        reply_markup=remove_keyboard(),
+    )
+
+
+@router.message(RegisterStates.waiting_for_contact)
+async def receive_contact_wrong_input(message: Message) -> None:
+    """Employee sent something other than a shared contact — re-prompt."""
+    lang = get_lang(message.from_user.language_code)
+    await message.answer(t("contact_wrong_input", lang), reply_markup=share_contact_keyboard(lang))
