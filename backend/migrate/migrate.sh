@@ -8,64 +8,66 @@
 # Connection settings come from the standard libpq variables:
 #   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
 #
-# Safe for existing databases: all migrations in this project are idempotent
-# (IF NOT EXISTS / IF EXISTS), so on a database that was created earlier via
-# docker-entrypoint-initdb.d the already-applied files are simply re-checked
-# and recorded, and only the missing changes are actually applied.
+# psql exit codes: 1 = fatal (e.g. file not found), 2 = connection failed
+# (wrong password / host), 3 = SQL error in a migration file.
 # ---------------------------------------------------------------------------
 set -eu
+
+log() { echo "[migrate] $*"; }
+fail() { echo "[migrate] ERROR: $*" >&2; exit 1; }
 
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/migrations}"
 WAIT_RETRIES="${WAIT_RETRIES:-30}"
 
-: "${PGHOST:?PGHOST is required}"
-: "${PGUSER:?PGUSER is required}"
-: "${PGDATABASE:?PGDATABASE is required}"
-: "${PGPASSWORD:?PGPASSWORD is required (set POSTGRES_PASSWORD in .env)}"
+[ -n "${PGHOST:-}" ]     || fail "PGHOST is not set"
+[ -n "${PGUSER:-}" ]     || fail "PGUSER is not set"
+[ -n "${PGDATABASE:-}" ] || fail "PGDATABASE is not set"
+[ -n "${PGPASSWORD:-}" ] || fail "PGPASSWORD is empty - set POSTGRES_PASSWORD in .env next to docker-compose.yml"
 
 # Hide "already exists, skipping" NOTICE spam from idempotent statements.
 export PGOPTIONS="${PGOPTIONS:--c client_min_messages=warning}"
 
 PSQL="psql -X -q -v ON_ERROR_STOP=1"
 
-log() { echo "[migrate] $*"; }
+log "target: $PGUSER@$PGHOST:${PGPORT:-5432}/$PGDATABASE"
 
-# 1. Wait for the database -------------------------------------------------
+# 1. Wait until the server accepts connections ------------------------------
 attempt=0
 until pg_isready -q; do
   attempt=$((attempt + 1))
-  if [ "$attempt" -ge "$WAIT_RETRIES" ]; then
-    log "database $PGHOST is not reachable after $WAIT_RETRIES attempts"
-    exit 1
-  fi
+  [ "$attempt" -lt "$WAIT_RETRIES" ] || fail "database $PGHOST is not reachable after $WAIT_RETRIES attempts"
   log "waiting for database ($attempt/$WAIT_RETRIES)..."
   sleep 2
 done
 
-# 2. Tracking table ---------------------------------------------------------
-$PSQL <<'SQL'
-CREATE TABLE IF NOT EXISTS schema_migrations (
+# 2. Verify credentials (pg_isready does NOT check the password) ------------
+if ! auth_error=$($PSQL -t -A -c "SELECT 1" 2>&1 >/dev/null); then
+  echo "$auth_error" >&2
+  fail "cannot log in to the database.
+Most common cause: POSTGRES_PASSWORD in .env differs from the password the
+database volume was created with (Postgres only reads POSTGRES_PASSWORD on the
+very first start of an empty volume). Fix without losing data:
+  docker compose exec db psql -U $PGUSER -d $PGDATABASE -c \"ALTER USER $PGUSER PASSWORD '<value from .env>';\""
+fi
+
+# 3. Tracking table ---------------------------------------------------------
+$PSQL -c "CREATE TABLE IF NOT EXISTS schema_migrations (
     filename    VARCHAR(255) PRIMARY KEY,
     checksum    CHAR(64)     NOT NULL,
     applied_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-SQL
+);"
 
-# 3. Apply pending migrations ----------------------------------------------
+# 4. Apply pending migrations ----------------------------------------------
 applied=0
 skipped=0
 
 for file in "$MIGRATIONS_DIR"/*.sql; do
-  if [ ! -e "$file" ]; then
-    log "no migration files found in $MIGRATIONS_DIR"
-    exit 1
-  fi
+  [ -e "$file" ] || fail "no migration files found in $MIGRATIONS_DIR"
 
   name=$(basename "$file")
   checksum=$(sha256sum "$file" | cut -d ' ' -f 1)
 
-  recorded=$(echo "SELECT checksum FROM schema_migrations WHERE filename = :'name';" \
-    | $PSQL -t -A -v name="$name")
+  recorded=$($PSQL -t -A -c "SELECT checksum FROM schema_migrations WHERE filename = '$name';")
 
   if [ -n "$recorded" ]; then
     if [ "$recorded" != "$checksum" ]; then
@@ -76,11 +78,11 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
   fi
 
   log "applying $name"
-  $PSQL -f "$file"
+  if ! $PSQL -f "$file"; then
+    fail "migration $name failed - see the SQL error above. Nothing after it was applied."
+  fi
 
-  echo "INSERT INTO schema_migrations (filename, checksum) VALUES (:'name', :'checksum');" \
-    | $PSQL -v name="$name" -v checksum="$checksum"
-
+  $PSQL -c "INSERT INTO schema_migrations (filename, checksum) VALUES ('$name', '$checksum');"
   applied=$((applied + 1))
 done
 
