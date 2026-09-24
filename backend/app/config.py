@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     BOT_INTERNAL_SECRET: str
 
+    # ── Telegram bot token ────────────────────────────────────────────────────
+    # Optional: when set the backend can push Telegram messages directly
+    # (e.g. approve / reject notifications).  If unset, those pushes are
+    # silently skipped — all other functionality is unaffected.
+    BOT_TOKEN: str | None = None
+
     # ── Application identity ─────────────────────────────────────────────────
     APP_NAME: str = "MADO Checklist"
 

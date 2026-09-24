@@ -13,6 +13,7 @@ from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
 from app.models.user import User
 from app.routers.audit_logs import log_action
+from app.telegram import notify_employee_approved, notify_employee_rejected
 from app.schemas.employee import (
     EmployeeCreate,
     EmployeeUpdate,
@@ -51,14 +52,14 @@ async def _get_own_role(current: Employee, db: AsyncSession) -> Role | None:
 async def _assert_can_assign_role(role_id: int, current: Employee, db: AsyncSession) -> None:
     target_role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
     if not target_role:
-        raise HTTPException(status_code=404, detail="\u0420\u043e\u043b\u044c \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430")
+        raise HTTPException(status_code=404, detail="Роль не найдена")
 
     own_role = await _get_own_role(current, db)
     own_level = own_role.permission_level if own_role else 0
     if target_role.permission_level > own_level:
         raise HTTPException(
             status_code=403,
-            detail="\u041d\u0435\u043b\u044c\u0437\u044f \u043d\u0430\u0437\u043d\u0430\u0447\u0438\u0442\u044c \u0440\u043e\u043b\u044c \u0441 \u0431\u043e\u043b\u0435\u0435 \u0432\u044b\u0441\u043e\u043a\u0438\u043c \u0443\u0440\u043e\u0432\u043d\u0435\u043c \u0434\u043e\u0441\u0442\u0443\u043f\u0430, \u0447\u0435\u043c \u0432\u0430\u0448 \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u0439",
+            detail="Нельзя назначить роль с более высоким уровнем доступа, чем ваш собственный",
         )
 
 
@@ -78,7 +79,7 @@ async def _assert_branch_access_to_employee(emp: Employee, current: Employee, db
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
     existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
     if not (existing_branches & own_allowed_branches):
-        raise HTTPException(status_code=403, detail="\u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430 \u043a \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0443 \u0434\u0440\u0443\u0433\u043e\u0433\u043e \u0444\u0438\u043b\u0438\u0430\u043b\u0430")
+        raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
 
 
 # ── batch-aware builder ────────────────────────────────────────────────────────────────
@@ -96,10 +97,10 @@ def _employee_out_from_cache(
         full_name=emp.full_name,
         phone=emp.phone,
         role_id=emp.role_id,
-        role_name=role.name_ru if role else (None if emp.role_id is None else "\u2014"),
+        role_name=role.name_ru if role else (None if emp.role_id is None else "—"),
         role_level=role.permission_level if role else 0,
         primary_branch_id=emp.primary_branch_id,
-        primary_branch_name=branch.name if branch else (None if emp.primary_branch_id is None else "\u2014"),
+        primary_branch_name=branch.name if branch else (None if emp.primary_branch_id is None else "—"),
         additional_branch_ids=emp.additional_branch_ids or [],
         status=emp.status,
         invite_code=emp.invite_code,
@@ -158,7 +159,7 @@ async def _insert_employee_with_unique_invite(
 
     raise HTTPException(
         status_code=500,
-        detail="\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0443\u043d\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0439 invite-\u043a\u043e\u0434. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0435\u0449\u0451 \u0440\u0430\u0437.",
+        detail="Не удалось сгенерировать уникальный invite-код. Попробуйте ещё раз.",
     )
 
 
@@ -183,11 +184,11 @@ async def get_my_profile(
         full_name=current.full_name,
         status=current.status,
         role_id=current.role_id,
-        role_name=role.name_ru if role else "\u2014",
+        role_name=role.name_ru if role else "—",
         role_code=role.code if role else "",
         role_level=role.permission_level if role else 0,
         primary_branch_id=current.primary_branch_id,
-        primary_branch_name=branch.name if branch else "\u2014",
+        primary_branch_name=branch.name if branch else "—",
         additional_branch_ids=current.additional_branch_ids or [],
         preferred_language=current.preferred_language or "ru",
     )
@@ -214,14 +215,14 @@ async def list_employees(
       invisible to every manager who isn't a can_access_all_branches role.
     """
     if status is not None and status not in _VALID_STATUSES:
-        raise HTTPException(status_code=422, detail="\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0441\u0442\u0430\u0442\u0443\u0441")
+        raise HTTPException(status_code=422, detail="Неверный статус")
 
     role = await _get_own_role(current, db)
     can_all = bool(role and role.can_access_all_branches)
     own_allowed_branches = {current.primary_branch_id, *(current.additional_branch_ids or [])}
 
     if branch_id is not None and not can_all and branch_id not in own_allowed_branches:
-        raise HTTPException(status_code=403, detail="\u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430 \u043a \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430\u043c \u0434\u0440\u0443\u0433\u043e\u0433\u043e \u0444\u0438\u043b\u0438\u0430\u043b\u0430")
+        raise HTTPException(status_code=403, detail="Нет доступа к сотрудникам другого филиала")
 
     query = select(Employee)
 
@@ -301,7 +302,7 @@ async def create_employee(
         if not target_branches <= own_allowed_branches:
             raise HTTPException(
                 status_code=403,
-                detail="\u041d\u0435\u043b\u044c\u0437\u044f \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430 \u0432 \u0444\u0438\u043b\u0438\u0430\u043b, \u043a \u043a\u043e\u0442\u043e\u0440\u043e\u043c\u0443 \u0443 \u0432\u0430\u0441 \u043d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430",
+                detail="Нельзя добавить сотрудника в филиал, к которому у вас нет доступа",
             )
 
     lang = data.preferred_language if data.preferred_language in _VALID_LANGS else "ru"
@@ -331,7 +332,7 @@ async def update_employee(
 ):
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
     role = await _get_own_role(current, db)
     can_all = bool(role and role.can_access_all_branches)
@@ -344,11 +345,11 @@ async def update_employee(
         existing_branches = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
         target_branches = {b for b in {new_primary, *new_additional} if b is not None}
         if not (existing_branches & own_allowed_branches):
-            raise HTTPException(status_code=403, detail="\u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430 \u043a \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0443 \u0434\u0440\u0443\u0433\u043e\u0433\u043e \u0444\u0438\u043b\u0438\u0430\u043b\u0430")
+            raise HTTPException(status_code=403, detail="Нет доступа к сотруднику другого филиала")
         if not target_branches <= own_allowed_branches:
             raise HTTPException(
                 status_code=403,
-                detail="\u041d\u0435\u043b\u044c\u0437\u044f \u043f\u0435\u0440\u0435\u0432\u0435\u0441\u0442\u0438 \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430 \u0432 \u0444\u0438\u043b\u0438\u0430\u043b, \u043a \u043a\u043e\u0442\u043e\u0440\u043e\u043c\u0443 \u0443 \u0432\u0430\u0441 \u043d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430",
+                detail="Нельзя перевести сотрудника в филиал, к которому у вас нет доступа",
             )
 
     if data.role_id is not None and data.role_id != emp.role_id:
@@ -367,7 +368,7 @@ async def update_employee(
         emp.additional_branch_ids = data.additional_branch_ids
     if "status" in sent and data.status is not None:
         if data.status not in _VALID_STATUSES:
-            raise HTTPException(status_code=422, detail="\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0441\u0442\u0430\u0442\u0443\u0441")
+            raise HTTPException(status_code=422, detail="Неверный статус")
         emp.status = data.status
     if "hired_at" in sent:
         emp.hired_at = data.hired_at
@@ -395,7 +396,7 @@ async def approve_employee(
     """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
     await _assert_can_assign_role(data.role_id, current, db)
 
@@ -407,8 +408,16 @@ async def approve_employee(
         if not target_branches <= own_allowed_branches:
             raise HTTPException(
                 status_code=403,
-                detail="\u041d\u0435\u043b\u044c\u0437\u044f \u043d\u0430\u0437\u043d\u0430\u0447\u0438\u0442\u044c \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430 \u0432 \u0444\u0438\u043b\u0438\u0430\u043b, \u043a \u043a\u043e\u0442\u043e\u0440\u043e\u043c\u0443 \u0443 \u0432\u0430\u0441 \u043d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430",
+                detail="Нельзя назначить сотрудника в филиал, к которому у вас нет доступа",
             )
+
+    # Resolve display names for the Telegram notification before the commit.
+    assigned_role = (await db.execute(select(Role).where(Role.id == data.role_id))).scalar_one_or_none()
+    assigned_branch = (await db.execute(select(Branch).where(Branch.id == data.primary_branch_id))).scalar_one_or_none()
+    lang = emp.preferred_language or "ru"
+    role_name = assigned_role.name_ru if assigned_role else "—"
+    branch_name = assigned_branch.name if assigned_branch else "—"
+    tg_id = emp.telegram_id  # capture before commit so it is always available
 
     emp.role_id = data.role_id
     emp.primary_branch_id = data.primary_branch_id
@@ -428,6 +437,10 @@ async def approve_employee(
     )
     await db.commit()
     await db.refresh(emp)
+
+    # Notify the employee in Telegram (fire-and-forget, never raises).
+    await notify_employee_approved(tg_id, lang, role_name, branch_name)
+
     return await _build_employee_out(emp, db)
 
 
@@ -445,9 +458,13 @@ async def reject_employee(
     """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
     if emp.status != "pending":
-        raise HTTPException(status_code=400, detail="\u041c\u043e\u0436\u043d\u043e \u043e\u0442\u043a\u043b\u043e\u043d\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u0437\u0430\u044f\u0432\u043a\u0438 \u043d\u0430 \u0440\u0430\u0441\u0441\u043c\u043e\u0442\u0440\u0435\u043d\u0438\u0438")
+        raise HTTPException(status_code=400, detail="Можно отклонить только заявки на рассмотрении")
+
+    # Capture before delete.
+    tg_id = emp.telegram_id
+    lang = emp.preferred_language or "ru"
 
     await log_action(
         db, actor_id=current.id, action="employee.rejected", entity_type="employee", entity_id=emp.id,
@@ -455,6 +472,10 @@ async def reject_employee(
     )
     await db.delete(emp)
     await db.commit()
+
+    # Notify the employee in Telegram (fire-and-forget, never raises).
+    await notify_employee_rejected(tg_id, lang)
+
     return {"ok": True}
 
 
@@ -466,7 +487,7 @@ async def regenerate_invite(
 ):
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
     await _assert_branch_access_to_employee(emp, current, db)
 
@@ -490,7 +511,7 @@ async def regenerate_invite(
                 attempt + 1, _MAX_INVITE_ATTEMPTS, employee_id,
             )
     else:
-        raise HTTPException(status_code=500, detail="\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0443\u043d\u0438\u043a\u0430\u043b\u044c\u043d\u044b\u0439 invite-\u043a\u043e\u0434.")
+        raise HTTPException(status_code=500, detail="Не удалось сгенерировать уникальный invite-код.")
 
     await db.commit()
     return {"invite_code": emp.invite_code}
@@ -505,9 +526,9 @@ async def claim_profile(
     code = body.invite_code.strip().upper()
     target = (await db.execute(select(Employee).where(Employee.invite_code == code))).scalar_one_or_none()
     if not target:
-        raise HTTPException(status_code=404, detail="\u041a\u043e\u0434 \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u044f \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Код приглашения не найден")
     if target.status != "active":
-        raise HTTPException(status_code=403, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u0434\u0435\u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d")
+        raise HTTPException(status_code=403, detail="Сотрудник деактивирован")
 
     own_account = (await db.execute(
         select(EmployeeAccount).where(EmployeeAccount.user_id == current_user.id)
@@ -516,7 +537,7 @@ async def claim_profile(
     if own_account:
         if own_account.employee_id == target.id:
             return await _build_employee_out(target, db)
-        raise HTTPException(status_code=409, detail="\u0412\u0430\u0448 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0436\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a \u0434\u0440\u0443\u0433\u043e\u043c\u0443 \u043f\u0440\u043e\u0444\u0438\u043b\u044e \u0441\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0430")
+        raise HTTPException(status_code=409, detail="Ваш аккаунт уже привязан к другому профилю сотрудника")
 
     already_claimed = (await db.execute(
         select(EmployeeAccount).where(EmployeeAccount.employee_id == target.id)
@@ -524,7 +545,7 @@ async def claim_profile(
     if already_claimed:
         raise HTTPException(
             status_code=409,
-            detail="\u042d\u0442\u043e\u0442 \u043f\u0440\u043e\u0444\u0438\u043b\u044c \u0443\u0436\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d \u043a \u0434\u0440\u0443\u0433\u043e\u043c\u0443 \u0430\u043a\u043a\u0430\u0443\u043d\u0442\u0443. \u041f\u043e\u043f\u0440\u043e\u0441\u0438\u0442\u0435 \u043c\u0435\u043d\u0435\u0434\u0436\u0435\u0440\u0430 \u043e\u0442\u0432\u044f\u0437\u0430\u0442\u044c \u0435\u0433\u043e.",
+            detail="Этот профиль уже привязан к другому аккаунту. Попросите менеджера отвязать его.",
         )
 
     account = EmployeeAccount(employee_id=target.id, user_id=current_user.id)
@@ -545,7 +566,7 @@ async def unlink_employee_account(
 ):
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
-        raise HTTPException(status_code=404, detail="\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d")
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
     await _assert_branch_access_to_employee(emp, current, db)
 
@@ -553,7 +574,7 @@ async def unlink_employee_account(
         select(EmployeeAccount).where(EmployeeAccount.employee_id == employee_id)
     )).scalar_one_or_none()
     if not account:
-        raise HTTPException(status_code=404, detail="\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u043d\u0435 \u043f\u0440\u0438\u0432\u044f\u0437\u0430\u043d")
+        raise HTTPException(status_code=404, detail="Аккаунт не привязан")
 
     await db.delete(account)
     await log_action(
@@ -569,20 +590,20 @@ async def bootstrap_director(
     body: BootstrapRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """\u0421\u043e\u0437\u0434\u0430\u0451\u0442 \u043f\u0435\u0440\u0432\u043e\u0433\u043e \u0434\u0438\u0440\u0435\u043a\u0442\u043e\u0440\u0430 + \u0444\u0438\u043b\u0438\u0430\u043b (\u0442\u043e\u043b\u044c\u043a\u043e \u043f\u0440\u0438 \u043f\u0443\u0441\u0442\u043e\u0439 \u0411\u0414)."""
+    """Создаёт первого директора + филиал (только при пустой БД)."""
     count = (await db.execute(select(func.count()).select_from(Employee))).scalar_one()
     if count > 0:
-        raise HTTPException(status_code=409, detail="\u0421\u0438\u0441\u0442\u0435\u043c\u0430 \u0443\u0436\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0430")
+        raise HTTPException(status_code=409, detail="Система уже настроена")
 
     branch_name = body.branch_name.strip()
     if not branch_name:
-        raise HTTPException(status_code=422, detail="\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0444\u0438\u043b\u0438\u0430\u043b\u0430 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043f\u0443\u0441\u0442\u044b\u043c")
+        raise HTTPException(status_code=422, detail="Название филиала не может быть пустым")
 
     director_role = (await db.execute(select(Role).where(Role.code == "director"))).scalar_one_or_none()
     if not director_role:
         director_role = Role(
             code="director",
-            name_ru="\u0414\u0438\u0440\u0435\u043a\u0442\u043e\u0440",
+            name_ru="Директор",
             category="management",
             permission_level=3,
             can_access_all_branches=True,
