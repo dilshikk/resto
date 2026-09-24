@@ -8,10 +8,12 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth import get_current_user, get_current_web_user, require_manager
 from app.database import get_db
+from app.models.audit_log import AuditLog
 from app.models.branch import Branch
 from app.models.checklist import Checklist, ChecklistItem, ChecklistTemplate
 from app.models.employee import Employee, EmployeeAccount
 from app.models.role import Role
+from app.models.shift import Shift
 from app.models.user import User
 from app.routers.audit_logs import log_action
 from app.telegram import notify_employee_approved, notify_employee_rejected
@@ -361,33 +363,46 @@ async def delete_employee(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Permanently delete an employee and all their associations:
-    - employee_accounts (CASCADE, handled by DB)
-    - checklist_items.completed_by_employee_id  → NULL
-    - checklists.created_by_employee_id         → NULL
-    - checklist_templates.created_by_employee_id → NULL
+    Permanently delete an employee and clean up all FK references:
+      - shifts                              → DELETE rows
+      - audit_logs.actor_id                 → NULL
+      - checklist_items.completed_by_*      → NULL
+      - checklists.created_by_*             → NULL
+      - checklist_templates.created_by_*    → NULL
+      - employee_accounts                   → CASCADE (handled by DB)
     """
     emp = (await db.execute(select(Employee).where(Employee.id == employee_id))).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
-    # Prevent self-deletion.
     if emp.id == current.id:
         raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
 
     await _assert_branch_access_to_employee(emp, current, db)
 
-    # Nullify FK references that are not CASCADE so the DELETE won't fail.
+    # Delete shifts (they belong to the employee, no reason to keep them)
+    await db.execute(
+        Shift.__table__.delete().where(Shift.employee_id == employee_id)
+    )
+    # Nullify audit log actor (audit history is kept, actor becomes anonymous)
+    await db.execute(
+        update(AuditLog)
+        .where(AuditLog.actor_id == employee_id)
+        .values(actor_id=None)
+    )
+    # Nullify checklist item completions
     await db.execute(
         update(ChecklistItem)
         .where(ChecklistItem.completed_by_employee_id == employee_id)
         .values(completed_by_employee_id=None)
     )
+    # Nullify checklist creator
     await db.execute(
         update(Checklist)
         .where(Checklist.created_by_employee_id == employee_id)
         .values(created_by_employee_id=None)
     )
+    # Nullify checklist template creator
     await db.execute(
         update(ChecklistTemplate)
         .where(ChecklistTemplate.created_by_employee_id == employee_id)
