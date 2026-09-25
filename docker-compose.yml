@@ -46,11 +46,11 @@ services:
       dockerfile: Dockerfile
     restart: always
     environment:
-      DATABASE_URL: postgresql+asyncpg://mado:${POSTGRES_PASSWORD}@db:5432/mado_checklist
+      DATABASE_URL: postgresql+asyncpg://mado_staff:${POSTGRES_PASSWORD}@db:5432/mado_checklist
       # Required — no fallback. Set in .env or the environment.
       # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
       SECRET_KEY: ${SECRET_KEY}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://yourdomain.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:3001,https://staff.mado.uz}
       # Required — no fallback. Set in .env or the environment.
       # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
       BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
