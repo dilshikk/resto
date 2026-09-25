@@ -11,6 +11,8 @@ class RegisterStates(StatesGroup):
     telegram_id that GET /bot/status reports as "not_registered" (i.e. it
     has no invite code and has never messaged the bot before).
     """
+    # First step: the employee picks the bot language (ru / uz / en).
+    choosing_language = State()
     # Waiting for the employee to tap the "Share contact" reply-keyboard
     # button so we can capture their phone number.
     waiting_for_contact = State()

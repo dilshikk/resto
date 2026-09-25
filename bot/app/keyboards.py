@@ -43,6 +43,13 @@ _BTN: dict[str, dict[str, str]] = {
     },
 }
 
+# Shown before the user has chosen a language, so it is trilingual.
+CHOOSE_LANGUAGE_TEXT = (
+    "Выберите язык\n"
+    "Tilni tanlang\n"
+    "Choose your language"
+)
+
 
 def _shift_label(shift: str, lang: str) -> str:
     return _SHIFT_LABELS.get(lang, _SHIFT_LABELS["ru"]).get(shift, shift)
@@ -52,6 +59,19 @@ def _btn(key: str, lang: str, **kwargs: str) -> str:
     labels = _BTN.get(lang, _BTN["ru"])
     template = labels.get(key, _BTN["ru"].get(key, key))
     return template.format(**kwargs) if kwargs else template
+
+
+# ── Language selection ────────────────────────────────────────────────────
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    """Callback data: 'lang:ru' | 'lang:uz' | 'lang:en'."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001f1f7\U0001f1fa Русский", callback_data="lang:ru")],
+            [InlineKeyboardButton(text="\U0001f1fa\U0001f1ff O\u2018zbekcha", callback_data="lang:uz")],
+            [InlineKeyboardButton(text="\U0001f1ec\U0001f1e7 English", callback_data="lang:en")],
+        ]
+    )
 
 
 # ── Checklist navigation ──────────────────────────────────────────────────

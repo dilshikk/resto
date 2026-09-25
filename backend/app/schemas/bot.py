@@ -28,6 +28,8 @@ class BotRegisterRequest(BaseModel):
     full_name: str
     username: str | None = None
     phone: str | None = None
+    # Language picked by the employee on the first bot screen.
+    preferred_language: str = "ru"
 
 
 class BotStatusOut(BaseModel):
