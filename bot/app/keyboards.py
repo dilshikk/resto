@@ -43,12 +43,8 @@ _BTN: dict[str, dict[str, str]] = {
     },
 }
 
-# Shown before the user has chosen a language, so it is trilingual.
-CHOOSE_LANGUAGE_TEXT = (
-    "Выберите язык\n"
-    "Tilni tanlang\n"
-    "Choose your language"
-)
+# Shown before the user has chosen a language, so it is bilingual.
+CHOOSE_LANGUAGE_TEXT = "Выберите язык / Tilni tanlang"
 
 
 def _shift_label(shift: str, lang: str) -> str:
@@ -64,12 +60,13 @@ def _btn(key: str, lang: str, **kwargs: str) -> str:
 # ── Language selection ────────────────────────────────────────────────────
 
 def language_keyboard() -> InlineKeyboardMarkup:
-    """Callback data: 'lang:ru' | 'lang:uz' | 'lang:en'."""
+    """Callback data: 'lang:ru' | 'lang:uz'."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="\U0001f1f7\U0001f1fa Русский", callback_data="lang:ru")],
-            [InlineKeyboardButton(text="\U0001f1fa\U0001f1ff O\u2018zbekcha", callback_data="lang:uz")],
-            [InlineKeyboardButton(text="\U0001f1ec\U0001f1e7 English", callback_data="lang:en")],
+            [
+                InlineKeyboardButton(text="\U0001f1f7\U0001f1fa Русский", callback_data="lang:ru"),
+                InlineKeyboardButton(text="\U0001f1fa\U0001f1ff O\u2018zbekcha", callback_data="lang:uz"),
+            ],
         ]
     )
 
@@ -187,9 +184,7 @@ def skip_location_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
 def share_contact_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
     """
     Reply-keyboard with a single "Share contact" button using Telegram's
-    native contact-request feature (request_contact=True). Telegram fills
-    in the user's own phone number automatically — they only need to tap
-    the button and confirm.
+    native contact-request feature (request_contact=True).
     """
     return ReplyKeyboardMarkup(
         keyboard=[
