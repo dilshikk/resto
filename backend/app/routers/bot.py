@@ -154,7 +154,7 @@ async def register_via_bot(
     """
     Called by the bot on /start when this telegram_id has never been seen
     before (GET /bot/status returned "not_registered") and the employee has
-    just shared their contact.
+    just picked a language and shared their contact.
 
     Creates a new employees row with status="pending" and no role/branch —
     a manager reviews it in the "Сотрудники" screen and either approves it
@@ -171,6 +171,7 @@ async def register_via_bot(
     if existing:
         raise HTTPException(status_code=409, detail="Этот Telegram уже зарегистрирован")
 
+    lang = body.preferred_language if body.preferred_language in _VALID_LANGS else "ru"
     emp = Employee(
         full_name=body.full_name.strip(),
         phone=body.phone,
@@ -178,7 +179,7 @@ async def register_via_bot(
         telegram_id=body.telegram_id,
         telegram_username=body.username,
         additional_branch_ids=[],
-        preferred_language="ru",
+        preferred_language=lang,
     )
     db.add(emp)
     await db.flush()
@@ -211,7 +212,7 @@ async def get_registration_status(
     """
     Called by the bot on /start (before it has a per-employee token) to
     decide what to show:
-      - not_registered — never seen this telegram_id: ask to share contact
+      - not_registered — never seen this telegram_id: choose language, share contact
       - pending         — awaiting manager review: show a waiting message
       - blocked/archived/inactive/fired — show a status message
       - active          — bot should proceed to greet/link normally
@@ -307,10 +308,7 @@ async def resync_telegram_account(
 
     Telegram itself already authenticates the caller as this telegram_id,
     so if an employee profile is already linked to it we can safely mint a
-    fresh session token here — no invite code required. This is what makes
-    a bot restart recoverable: without it, employees.telegram_id being
-    already set makes /bot/link permanently reject them with 409, while the
-    old token is unrecoverable (only its hash is stored).
+    fresh session token here — no invite code required.
 
     404 is returned only when this telegram_id has genuinely never been
     linked, in which case the bot should fall back to asking for an invite
