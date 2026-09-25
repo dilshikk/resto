@@ -10,8 +10,11 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    # NULL actor_id = system/scheduler action (e.g. automatic overdue escalation)
-    actor_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id"), nullable=True)
+    # NULL actor_id = system/scheduler action or deleted employee.
+    # ON DELETE SET NULL keeps history when an employee is removed.
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
     action: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. task.completed, template.updated
     entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
     entity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
