@@ -1,12 +1,12 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
     restart: always
     environment:
       POSTGRES_DB: mado_checklist
-      POSTGRES_USER: mado
+      # The production volume was created with this role; keep it in sync
+      # with backend DATABASE_URL and the migrate service.
+      POSTGRES_USER: mado_staff
       # Required — no fallback. Set in .env or the environment.
       # Generate with: openssl rand -hex 24
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -17,7 +17,7 @@ services:
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mado -d mado_checklist"]
+      test: ["CMD-SHELL", "pg_isready -U mado_staff -d mado_checklist"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -33,7 +33,7 @@ services:
     environment:
       PGHOST: db
       PGPORT: 5432
-      PGUSER: mado
+      PGUSER: mado_staff
       PGDATABASE: mado_checklist
       PGPASSWORD: ${POSTGRES_PASSWORD}
     depends_on:
