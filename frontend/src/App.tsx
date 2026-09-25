@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useLocation } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
 import LoginPage from "./pages/LoginPage.tsx";
 import Index from "./pages/Index.tsx";
@@ -17,9 +17,23 @@ import StandardsPage from "./pages/app/standards/page.tsx";
 import PhotosPage from "./pages/app/photos/page.tsx";
 import { useAuth } from "./context/auth-context.tsx";
 
+function FullScreenLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-60" />
+    </div>
+  );
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
+  // Wait for the silent refresh on page load; otherwise the user is briefly
+  // redirected to /login and then bounced back once the session is restored.
+  if (isLoading) return <FullScreenLoader />;
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
   return <>{children}</>;
 }
 
