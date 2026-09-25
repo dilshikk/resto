@@ -155,7 +155,11 @@ async def get_registration_status(telegram_id: int) -> dict[str, Any]:
 
 
 async def register_account(
-    telegram_id: int, full_name: str, username: str | None, phone: str | None
+    telegram_id: int,
+    full_name: str,
+    username: str | None,
+    phone: str | None,
+    preferred_language: str = "ru",
 ) -> dict[str, Any]:
     """
     POST /bot/register — self-service registration for a telegram_id that
@@ -170,6 +174,7 @@ async def register_account(
                 "full_name": full_name,
                 "username": username,
                 "phone": phone,
+                "preferred_language": preferred_language,
             },
         )
         return await _handle(resp)
@@ -193,11 +198,8 @@ async def resync_account(telegram_id: int) -> dict[str, Any]:
     POST /bot/resync — silently re-issue a session token for a telegram_id
     that is already linked to an employee (no invite code required).
 
-    This is what recovers employees after a bot restart wipes the in-memory
-    _token_cache: the old /bot/link flow would otherwise reject them with
-    409 "Telegram already linked" forever, since employees.telegram_id stays
-    set in the database. Raises ApiError(404) if this telegram_id was never
-    linked -- callers should fall back to the invite-code flow in that case.
+    Raises ApiError(404) if this telegram_id was never linked -- callers
+    should fall back to the invite-code flow in that case.
     """
     async with _base_client() as c:
         resp = await c.post("/bot/resync", json={"telegram_id": telegram_id})
