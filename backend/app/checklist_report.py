@@ -32,7 +32,15 @@ from app.models.branch import Branch
 from app.models.checklist import Checklist
 from app.telegram import send_document
 
-logger = logging.getLogger(__name__)
+# uvicorn does not configure app loggers, so attach our own handler to make
+# report diagnostics visible in `docker compose logs backend`.
+logger = logging.getLogger("checklist_report")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(levelname)s:     [report] %(message)s"))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 # Keep strong references so background tasks are not garbage-collected.
 _background_tasks: set[asyncio.Task] = set()
@@ -66,6 +74,11 @@ def _register_fonts() -> None:
 
 
 _register_fonts()
+logger.info(
+    "PDF reports config: MANAGERS_CHAT_ID=%s, BOT_TOKEN=%s",
+    settings.MANAGERS_CHAT_ID or "NOT SET",
+    "set" if settings.BOT_TOKEN else "NOT SET",
+)
 
 
 def _p(text: str, size: int = 10, bold: bool = False, color=colors.black) -> Paragraph:
@@ -186,6 +199,7 @@ async def build_checklist_pdf(checklist_id: int, completed_by: str | None) -> tu
 async def _generate_and_send(checklist_id: int, completed_by: str | None) -> None:
     try:
         pdf, filename, caption = await build_checklist_pdf(checklist_id, completed_by)
+        logger.info("Checklist %d: PDF built (%d bytes), sending to %s", checklist_id, len(pdf), settings.MANAGERS_CHAT_ID)
         await send_document(settings.MANAGERS_CHAT_ID, pdf, filename, caption)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to build/send PDF report for checklist %d", checklist_id)
@@ -194,6 +208,12 @@ async def _generate_and_send(checklist_id: int, completed_by: str | None) -> Non
 def schedule_checklist_report(checklist_id: int, completed_by: str | None) -> None:
     """Fire-and-forget: build the PDF and send it to the managers group."""
     if not settings.MANAGERS_CHAT_ID or not settings.BOT_TOKEN:
+        logger.warning(
+            "Checklist %d: report skipped — MANAGERS_CHAT_ID=%s, BOT_TOKEN=%s",
+            checklist_id,
+            settings.MANAGERS_CHAT_ID or "NOT SET",
+            "set" if settings.BOT_TOKEN else "NOT SET",
+        )
         return
     task = asyncio.create_task(_generate_and_send(checklist_id, completed_by))
     _background_tasks.add(task)
