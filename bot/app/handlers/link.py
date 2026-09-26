@@ -34,7 +34,9 @@ async def _greet_linked_employee(message: Message, telegram_id: int, lang: str) 
 async def _try_greet(message: Message, telegram_id: int, lang: str) -> bool:
     """
     Greet an already-linked employee. Returns False when the employee is not
-    linked (401/404) so the caller continues with the registration flow.
+    linked (401/404), or is linked but no longer active (403), so the caller
+    continues with the registration/status flow instead of surfacing the raw
+    resync error.
 
     On 401 the cached session token is dropped: it may belong to an employee
     that was deleted from the web panel. Without this, the same person would
@@ -47,7 +49,7 @@ async def _try_greet(message: Message, telegram_id: int, lang: str) -> bool:
         if e.status_code == 401:
             api_client.clear_session(telegram_id)
             return False
-        if e.status_code == 404:
+        if e.status_code in (403, 404):
             return False
         raise
 
