@@ -15,6 +15,7 @@ import {
   ChefHat,
   LogOut,
   CalendarDays,
+  CalendarClock,
   BookOpen,
   Camera,
 } from "lucide-react";
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { to: "/app/shifts", label: "Смены", icon: CalendarDays, minLevel: 1 },
   { to: "/app/branches", label: "Филиалы", icon: Building2, minLevel: 2 },
   { to: "/app/templates", label: "Шаблоны", icon: ClipboardList, minLevel: 1 },
+  { to: "/app/schedules", label: "Расписание", icon: CalendarClock, minLevel: 1 },
   { to: "/app/standards", label: "Стандарты", icon: BookOpen, minLevel: 2 },
   { to: "/app/reports", label: "Аналитика", icon: BarChart3, minLevel: 1 },
 ];

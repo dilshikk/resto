@@ -15,6 +15,7 @@ import IssuesPage from "./pages/app/issues/page.tsx";
 import ShiftsPage from "./pages/app/shifts/page.tsx";
 import StandardsPage from "./pages/app/standards/page.tsx";
 import PhotosPage from "./pages/app/photos/page.tsx";
+import SchedulesPage from "./pages/app/schedules/page.tsx";
 import { useAuth } from "./context/auth-context.tsx";
 
 function FullScreenLoader() {
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="/app/employees" element={<EmployeesPage />} />
             <Route path="/app/checklists" element={<ChecklistsPage />} />
             <Route path="/app/templates" element={<TemplatesPage />} />
+            <Route path="/app/schedules" element={<SchedulesPage />} />
             <Route path="/app/reports" element={<ReportsPage />} />
             <Route path="/app/issues" element={<IssuesPage />} />
             <Route path="/app/shifts" element={<ShiftsPage />} />
