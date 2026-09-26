@@ -81,6 +81,15 @@ class Checklist(Base):
     # pattern as template_name), so editing the template later never changes
     # checklists already generated. Empty list = visible to every role.
     role_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
+    # ── Schedule-based checklists (see app/models/schedule.py) ──────────────
+    # NULL for manual / legacy checklists.
+    schedule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("checklist_schedules.id", ondelete="SET NULL"), nullable=True
+    )
+    # Checklist is hidden from employees until this moment (NULL = visible now).
+    opens_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    open_notified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminder_notified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChecklistItem(Base):

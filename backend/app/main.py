@@ -14,6 +14,7 @@ from app.tasks.revoked_token_cleanup import run_revoked_token_cleanup_loop
 from app.tasks.checklist_scheduler import run_checklist_scheduler_loop
 from app.tasks.overdue_escalation import run_overdue_escalation_loop
 from app.tasks.login_attempt_cleanup import run_login_attempt_cleanup_loop
+from app.tasks.schedule_generator import run_schedule_generator_loop
 from app.routers import (
     auth,
     branches,
@@ -31,6 +32,8 @@ from app.routers import (
     audit_logs,
     bot,
     bot_complete,
+    bot_today,
+    schedules,
 )
 
 
@@ -59,11 +62,15 @@ async def lifespan(app: FastAPI):
         run_login_attempt_cleanup_loop(),
         name="login_attempt_cleanup",
     )
+    schedule_task = asyncio.create_task(
+        run_schedule_generator_loop(),
+        name="schedule_generator",
+    )
 
     try:
         yield
     finally:
-        for task in (cleanup_task, scheduler_task, escalation_task, login_cleanup_task):
+        for task in (cleanup_task, scheduler_task, escalation_task, login_cleanup_task, schedule_task):
             task.cancel()
             try:
                 await task
@@ -73,7 +80,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.9.0",
+    version="1.10.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
@@ -99,12 +106,16 @@ app.include_router(templates.router, prefix="/api/v1")
 # Must come before checklists.router: overrides /complete to add the PDF report.
 app.include_router(checklist_complete_report.router, prefix="/api/v1")
 app.include_router(checklists.router, prefix="/api/v1")
+app.include_router(schedules.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(issues.router, prefix="/api/v1")
 app.include_router(shifts.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(standards.router, prefix="/api/v1")
 app.include_router(audit_logs.router, prefix="/api/v1")
+# Must come before bot.router: overrides /bot/checklists/today
+# (branch timezone + hides scheduled checklists until they open).
+app.include_router(bot_today.router, prefix="/api/v1")
 app.include_router(bot.router, prefix="/api/v1")
 app.include_router(bot_complete.router, prefix="/api/v1")
 
