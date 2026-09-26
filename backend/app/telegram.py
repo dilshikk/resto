@@ -2,7 +2,8 @@
 Thin helper for sending Telegram messages directly from the backend.
 
 Used for push notifications that must arrive even when the employee has
-no active bot session (e.g. approve / reject on self-registration).
+no active bot session (e.g. approve / reject on self-registration), and
+for PDF checklist reports sent to the managers' group.
 
 All calls are fire-and-forget: failures are logged but never bubble up
 to the caller so that a Telegram outage never breaks an API response.
@@ -84,6 +85,34 @@ async def _send_message(chat_id: int, text: str) -> None:
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Telegram sendMessage error: chat_id=%d error=%s", chat_id, exc)
+
+
+async def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str | None = None) -> None:
+    """
+    Send a file (e.g. a PDF report) to *chat_id* via sendDocument.
+    Silently swallows all errors so callers are never affected.
+    """
+    token = settings.BOT_TOKEN
+    if not token:
+        logger.debug("BOT_TOKEN not set — skipping Telegram document to chat_id=%d", chat_id)
+        return
+
+    url = f"{_TG_API}/bot{token}/sendDocument"
+    data: dict[str, str] = {"chat_id": str(chat_id)}
+    if caption:
+        data["caption"] = caption[:1024]  # Telegram caption limit
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                url, data=data, files={"document": (filename, file_bytes, "application/pdf")}
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "Telegram sendDocument failed: chat_id=%d status=%d body=%s",
+                    chat_id, resp.status_code, resp.text[:200],
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Telegram sendDocument error: chat_id=%d error=%s", chat_id, exc)
 
 
 async def notify_employee_approved(
