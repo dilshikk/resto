@@ -37,6 +37,22 @@ def _item_text(item: dict, lang: str) -> str:
     return "\n".join(lines)
 
 
+async def _finish_checklist(message: Message, telegram_id: int, checklist_id: int, lang: str) -> None:
+    """
+    No items left: mark the checklist completed on the backend (which also
+    sends the PDF report to the managers' group), then tell the employee.
+    """
+    try:
+        await api_client.complete_checklist(telegram_id, checklist_id)
+    except ApiError as e:
+        await message.answer(t("save_error", lang, detail=e.detail))
+        return
+    await message.answer(
+        t("checklist_done", lang),
+        reply_markup=back_to_list_keyboard(lang),
+    )
+
+
 async def _show_current_item_or_finish(
     target: Message | CallbackQuery,
     telegram_id: int,
@@ -47,10 +63,7 @@ async def _show_current_item_or_finish(
     message = target.message if isinstance(target, CallbackQuery) else target
     item = await api_client.get_current_item(telegram_id, checklist_id, lang)
     if item is None:
-        await message.answer(
-            t("checklist_done", lang),
-            reply_markup=back_to_list_keyboard(lang),
-        )
+        await _finish_checklist(message, telegram_id, checklist_id, lang)
         return
     await message.answer(
         _item_text(item, lang),
@@ -69,7 +82,7 @@ async def _advance_checklist(
     Fetch the next pending item and either:
     - Show it with the standard inline keyboard  (task_type == 'checkbox')
     - Delegate to the matching task-type prompt  (all other types)
-    - Send the "all done" message                (no items left)
+    - Complete the checklist + "all done" message (no items left)
 
     This is the single routing point called after every completed or skipped
     item.  checklists.py and task_types.py both call this function; the
@@ -78,10 +91,7 @@ async def _advance_checklist(
     """
     item = await api_client.get_current_item(telegram_id, checklist_id, lang)
     if item is None:
-        await message.answer(
-            t("checklist_done", lang),
-            reply_markup=back_to_list_keyboard(lang),
-        )
+        await _finish_checklist(message, telegram_id, checklist_id, lang)
         return
 
     task_type: str = item.get("task_type", "checkbox")
