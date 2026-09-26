@@ -259,6 +259,13 @@ async def skip_item(
         return await _handle(resp)
 
 
+async def complete_checklist(telegram_id: int, checklist_id: int) -> dict[str, Any]:
+    """POST /bot/checklists/{id}/complete — close the checklist (idempotent)."""
+    async with await _emp_client(telegram_id) as c:
+        resp = await c.post(f"/bot/checklists/{checklist_id}/complete")
+        return await _handle(resp)
+
+
 async def upload_item_photo(
     telegram_id: int, checklist_id: int, item_id: int, file_bytes: bytes, filename: str
 ) -> dict[str, Any]:

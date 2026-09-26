@@ -22,6 +22,7 @@ from app.routers import (
     employee_removal,
     templates,
     checklists,
+    checklist_complete_report,
     analytics,
     issues,
     shifts,
@@ -95,6 +96,8 @@ app.include_router(roles.router, prefix="/api/v1")
 app.include_router(employees.router, prefix="/api/v1")
 app.include_router(employee_removal.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
+# Must come before checklists.router: overrides /complete to add the PDF report.
+app.include_router(checklist_complete_report.router, prefix="/api/v1")
 app.include_router(checklists.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(issues.router, prefix="/api/v1")
