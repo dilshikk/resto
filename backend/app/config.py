@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # silently skipped — all other functionality is unaffected.
     BOT_TOKEN: str | None = None
 
+    # ── Managers' Telegram group for PDF checklist reports ───────────────────
+    # Group/channel ID (usually starts with -100). When set together with
+    # BOT_TOKEN, a PDF report is sent there after every completed checklist.
+    MANAGERS_CHAT_ID: int | None = None
+
     # ── Application identity ─────────────────────────────────────────────────
     APP_NAME: str = "MADO Checklist"
 
@@ -46,6 +51,14 @@ class Settings(BaseSettings):
     OVERDUE_SUPERVISOR_NOTIFY_MINUTES: int = 30
 
     # ── Runtime validation ────────────────────────────────────────────────────
+
+    @field_validator("MANAGERS_CHAT_ID", mode="before")
+    @classmethod
+    def empty_chat_id_is_none(cls, v):  # noqa: ANN001, ANN206
+        # docker-compose passes "" when the variable is unset.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
 
     @field_validator("SECRET_KEY")
     @classmethod

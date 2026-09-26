@@ -57,6 +57,9 @@ services:
       # Optional: used by the backend to push Telegram notifications directly
       # (approve / reject). If unset, those pushes are silently skipped.
       BOT_TOKEN: ${BOT_TOKEN}
+      # Optional: managers' Telegram group ID (e.g. -1001234567890).
+      # PDF reports of completed checklists are sent there.
+      MANAGERS_CHAT_ID: ${MANAGERS_CHAT_ID:-}
       PHOTOS_DIR: /data/uploads
     volumes:
       # Checklist item photos previously lived in /tmp, which docker wipes on

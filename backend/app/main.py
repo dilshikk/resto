@@ -29,6 +29,7 @@ from app.routers import (
     standards,
     audit_logs,
     bot,
+    bot_complete,
 )
 
 
@@ -102,6 +103,7 @@ app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(standards.router, prefix="/api/v1")
 app.include_router(audit_logs.router, prefix="/api/v1")
 app.include_router(bot.router, prefix="/api/v1")
+app.include_router(bot_complete.router, prefix="/api/v1")
 
 
 @app.get("/health")
