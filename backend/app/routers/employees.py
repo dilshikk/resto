@@ -343,7 +343,15 @@ async def update_employee(
     if "status" in sent and data.status is not None:
         if data.status not in _VALID_STATUSES:
             raise HTTPException(status_code=422, detail="Неверный статус")
+        deactivated = emp.status == "active" and data.status != "active"
         emp.status = data.status
+        if deactivated and emp.telegram_id is not None:
+            # Detach Telegram immediately so the bot treats this person as
+            # unlinked on their next /start, instead of hitting a 403 from
+            # /bot/resync with a token that still resolves to this employee.
+            emp.telegram_id = None
+            emp.telegram_username = None
+            emp.bot_session_token_hash = None
     if "hired_at" in sent:
         emp.hired_at = data.hired_at
     if "preferred_language" in sent and data.preferred_language is not None:
