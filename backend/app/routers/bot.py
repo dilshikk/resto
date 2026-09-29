@@ -93,6 +93,50 @@ async def get_employee_by_bot_token(
     return emp
 
 
+# ── Checklist access guard (authorization, not just authentication) ──────────────
+
+async def assert_bot_checklist_access(cl: Checklist, emp: Employee, db: AsyncSession) -> None:
+    """
+    Raise 403 unless *emp* may act on checklist *cl*. Mirrors the rules of
+    GET /bot/checklists/today so that knowing a checklist_id is never enough:
+
+      • the checklist belongs to one of the employee's branches;
+      • its role scoping includes the employee's role (managers see all);
+      • a scheduled checklist has already opened (opens_at <= now).
+    """
+    allowed = {
+        b for b in (emp.primary_branch_id, *(emp.additional_branch_ids or [])) if b is not None
+    }
+    if cl.branch_id not in allowed:
+        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
+
+    role = None
+    if emp.role_id is not None:
+        role = (await db.execute(select(Role).where(Role.id == emp.role_id))).scalar_one_or_none()
+    is_manager = bool(role and role.permission_level >= 1)
+    if not _visible_to_role(cl.role_ids or [], emp.role_id, is_manager):
+        raise HTTPException(status_code=403, detail="Этот чек-лист предназначен для другой должности")
+
+    if cl.opens_at is not None and cl.opens_at > datetime.now(timezone.utc):
+        raise HTTPException(status_code=403, detail="Чек-лист ещё не открыт")
+
+
+async def get_bot_checklist(
+    checklist_id: int,
+    emp: Employee = Depends(get_employee_by_bot_token),
+    db: AsyncSession = Depends(get_db),
+) -> Checklist:
+    """
+    Dependency for every /bot/checklists/{checklist_id}/... endpoint: loads the
+    checklist (404 if missing) and enforces assert_bot_checklist_access.
+    """
+    cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
+    if not cl:
+        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    await assert_bot_checklist_access(cl, emp, db)
+    return cl
+
+
 # ── Localisation helpers ────────────────────────────────────────────────────────────
 
 def _pick_localized(ru: str, uz: str | None, en: str | None, lang: str) -> str:
@@ -377,7 +421,7 @@ async def list_my_checklists_today(
 async def get_my_current_item(
     checklist_id: int,
     lang: str = "ru",
-    emp: Employee = Depends(get_employee_by_bot_token),
+    cl: Checklist = Depends(get_bot_checklist),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -390,9 +434,6 @@ async def get_my_current_item(
     if lang not in _VALID_LANGS:
         lang = "ru"
 
-    cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
         return None
 
@@ -444,11 +485,9 @@ async def get_my_current_item(
 async def get_item(
     checklist_id: int,
     item_id: int,
-    emp: Employee = Depends(get_employee_by_bot_token),
+    _cl: Checklist = Depends(get_bot_checklist),
     db: AsyncSession = Depends(get_db),
 ):
-    # emp is resolved only to enforce authentication; suppress unused-var lint.
-    _ = emp
     item = (
         await db.execute(
             select(ChecklistItem).where(
@@ -467,12 +506,10 @@ async def toggle_item(
     checklist_id: int,
     item_id: int,
     body: BotToggleRequest,
+    cl: Checklist = Depends(get_bot_checklist),
     emp: Employee = Depends(get_employee_by_bot_token),
     db: AsyncSession = Depends(get_db),
 ):
-    cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
@@ -524,12 +561,10 @@ async def skip_item(
     checklist_id: int,
     item_id: int,
     body: BotSkipRequest,
+    cl: Checklist = Depends(get_bot_checklist),
     emp: Employee = Depends(get_employee_by_bot_token),
     db: AsyncSession = Depends(get_db),
 ):
-    cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
     if cl.status == "completed":
         raise HTTPException(status_code=400, detail="Чек-лист уже завершён")
 
@@ -568,21 +603,13 @@ async def skip_item(
 async def upload_item_photo(
     checklist_id: int,
     item_id: int,
-    x_bot_employee_token: str = Header(...),
     file: UploadFile = File(...),
+    _cl: Checklist = Depends(get_bot_checklist),
+    emp: Employee = Depends(get_employee_by_bot_token),
     db: AsyncSession = Depends(get_db),
 ):
-    # Resolve employee from token manually (can't use Depends inside multipart
-    # endpoint that also uses Header — inject token explicitly and call helper).
-    token_hash = _hash_bot_token(x_bot_employee_token)
-    emp = (
-        await db.execute(
-            select(Employee).where(Employee.bot_session_token_hash == token_hash)
-        )
-    ).scalar_one_or_none()
-    if not emp or emp.status != "active":
-        raise HTTPException(status_code=401, detail="Недействительный или отозванный токен бота")
-
+    # Authentication and checklist access are handled by the shared
+    # dependencies, same as every other employee-scoped endpoint.
     item = (
         await db.execute(
             select(ChecklistItem).where(
@@ -634,6 +661,7 @@ async def delete_item_photo(
     checklist_id: int,
     item_id: int,
     photo_id: int,
+    _cl: Checklist = Depends(get_bot_checklist),
     emp: Employee = Depends(get_employee_by_bot_token),
     db: AsyncSession = Depends(get_db),
 ):
