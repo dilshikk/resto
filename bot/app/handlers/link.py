@@ -213,13 +213,24 @@ async def _registration_lang(message: Message, state: FSMContext) -> str:
 @router.message(RegisterStates.waiting_for_contact, F.contact)
 async def receive_contact(message: Message, state: FSMContext) -> None:
     """
-    Employee tapped "Share contact". Telegram guarantees message.contact
-    belongs to the sender when it comes from the native request_contact
-    button, so we trust its phone_number/user_id here.
+    Employee tapped "Share contact".
+
+    The native request_contact button always sends the sender's own card with
+    contact.user_id == from_user.id. A forwarded or manually attached card
+    (someone else's contact, or a phone-book entry without a Telegram account)
+    has a different or missing user_id. The backend trusts the phone number we
+    send, so we only accept the sender's own contact and re-prompt otherwise.
     """
     telegram_id = message.from_user.id
     lang = await _registration_lang(message, state)
     contact = message.contact
+
+    if contact.user_id != telegram_id:
+        await message.answer(
+            t("contact_wrong_input", lang),
+            reply_markup=share_contact_keyboard(lang),
+        )
+        return
 
     full_name = " ".join(
         part for part in (contact.first_name, contact.last_name) if part
