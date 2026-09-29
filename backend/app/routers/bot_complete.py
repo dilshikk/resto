@@ -7,7 +7,6 @@ without marking the checklist completed, so no report could be triggered.
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import verify_bot_secret
@@ -16,7 +15,7 @@ from app.database import get_db
 from app.models.checklist import Checklist
 from app.models.employee import Employee
 from app.routers.audit_logs import log_action
-from app.routers.bot import get_employee_by_bot_token
+from app.routers.bot import get_bot_checklist, get_employee_by_bot_token
 from app.routers.checklists import _compute_deadline_status, _get_ordered_items, _is_item_pending
 
 router = APIRouter(prefix="/bot", tags=["bot"], dependencies=[Depends(verify_bot_secret)])
@@ -25,19 +24,15 @@ router = APIRouter(prefix="/bot", tags=["bot"], dependencies=[Depends(verify_bot
 @router.post("/checklists/{checklist_id}/complete")
 async def complete_my_checklist(
     checklist_id: int,
+    cl: Checklist = Depends(get_bot_checklist),
     emp: Employee = Depends(get_employee_by_bot_token),
     db: AsyncSession = Depends(get_db),
 ):
-    cl = (await db.execute(select(Checklist).where(Checklist.id == checklist_id))).scalar_one_or_none()
-    if not cl:
-        raise HTTPException(status_code=404, detail="Чек-лист не найден")
+    # Branch / role / opens_at access is enforced by get_bot_checklist, before
+    # any state is revealed (including the "already completed" shortcut below).
     if cl.status == "completed":
         # Idempotent: the bot may call this again when reopening a finished checklist.
         return {"ok": True, "already_completed": True, "deadline_status": _compute_deadline_status(cl)}
-
-    allowed = {emp.primary_branch_id, *(emp.additional_branch_ids or [])}
-    if cl.branch_id not in allowed:
-        raise HTTPException(status_code=403, detail="Нет доступа к чек-листу другого филиала")
 
     items = await _get_ordered_items(checklist_id, db)
     pending_required = [i for i in items if i.is_required and _is_item_pending(i)]
