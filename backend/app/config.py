@@ -10,15 +10,16 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     BOT_INTERNAL_SECRET: str
 
+    # ── FaceID Attendance — separate database (optional) ─────────────────────
+    # Set this to the asyncpg DSN of the FaceID server's PostgreSQL database.
+    # Example: postgresql+asyncpg://user:pass@192.168.1.100:5432/faceid_db
+    # When unset, all /attendance/* endpoints return 503.
+    ATTENDANCE_DATABASE_URL: str | None = None
+
     # ── Telegram bot token ────────────────────────────────────────────────────
-    # Optional: when set the backend can push Telegram messages directly
-    # (e.g. approve / reject notifications).  If unset, those pushes are
-    # silently skipped — all other functionality is unaffected.
     BOT_TOKEN: str | None = None
 
     # ── Managers' Telegram group for PDF checklist reports ───────────────────
-    # Group/channel ID (usually starts with -100). When set together with
-    # BOT_TOKEN, a PDF report is sent there after every completed checklist.
     MANAGERS_CHAT_ID: int | None = None
 
     # ── Application identity ─────────────────────────────────────────────────
@@ -32,13 +33,7 @@ class Settings(BaseSettings):
     PHOTOS_DIR: str = "/data/uploads"
 
     # ── Cookie security ───────────────────────────────────────────────────────
-    # Set COOKIE_SECURE=false in local .env when running over plain HTTP.
-    # In production (HTTPS) leave at the default True.
-    # When COOKIE_SECURE is False the SameSite attribute is forced to "lax"
-    # because browsers reject SameSite=None without Secure.
     COOKIE_SECURE: bool = True
-    # "none" is required for cross-origin setups (separate API domain).
-    # "lax" is used automatically when COOKIE_SECURE=False.
     COOKIE_SAMESITE: str = "none"
 
     # ── Automatic checklist generation ───────────────────────────────────────
@@ -55,7 +50,13 @@ class Settings(BaseSettings):
     @field_validator("MANAGERS_CHAT_ID", mode="before")
     @classmethod
     def empty_chat_id_is_none(cls, v):  # noqa: ANN001, ANN206
-        # docker-compose passes "" when the variable is unset.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+    @field_validator("ATTENDANCE_DATABASE_URL", mode="before")
+    @classmethod
+    def empty_attendance_url_is_none(cls, v):  # noqa: ANN001, ANN206
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
         return v
