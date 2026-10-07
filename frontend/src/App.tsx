@@ -16,6 +16,7 @@ import ShiftsPage from "./pages/app/shifts/page.tsx";
 import StandardsPage from "./pages/app/standards/page.tsx";
 import PhotosPage from "./pages/app/photos/page.tsx";
 import SchedulesPage from "./pages/app/schedules/page.tsx";
+import AttendancePage from "./pages/app/attendance/page.tsx";
 import { useAuth } from "./context/auth-context.tsx";
 
 function FullScreenLoader() {
@@ -29,8 +30,6 @@ function FullScreenLoader() {
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
-  // Wait for the silent refresh on page load; otherwise the user is briefly
-  // redirected to /login and then bounced back once the session is restored.
   if (isLoading) return <FullScreenLoader />;
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
@@ -71,6 +70,7 @@ export default function App() {
             <Route path="/app/shifts" element={<ShiftsPage />} />
             <Route path="/app/standards" element={<StandardsPage />} />
             <Route path="/app/photos" element={<PhotosPage />} />
+            <Route path="/app/attendance" element={<AttendancePage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
