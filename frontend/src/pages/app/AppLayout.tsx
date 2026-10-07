@@ -18,6 +18,7 @@ import {
   CalendarClock,
   BookOpen,
   Camera,
+  ScanFace,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { to: "/app/checklists", label: "Чек-листы", icon: ClipboardList, minLevel: 0 },
   { to: "/app/issues", label: "Проблемы", icon: AlertTriangle, minLevel: 1 },
   { to: "/app/photos", label: "Фотоотчёты", icon: Camera, minLevel: 0 },
+  { to: "/app/attendance", label: "Посещаемость", icon: ScanFace, minLevel: 1 },
   { to: "/app/employees", label: "Сотрудники", icon: Users, minLevel: 1 },
   { to: "/app/shifts", label: "Смены", icon: CalendarDays, minLevel: 1 },
   { to: "/app/branches", label: "Филиалы", icon: Building2, minLevel: 2 },
