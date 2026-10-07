@@ -35,6 +35,7 @@ from app.routers import (
     bot_today,
     schedules,
 )
+from app.routers import attendance
 
 
 @asynccontextmanager
@@ -42,8 +43,6 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Wire the persistent login-attempt tracker to the DB session factory.
-    # Must happen after the engine is ready and before any request is served.
     login_attempt_tracker.configure(AsyncSessionLocal)
 
     cleanup_task = asyncio.create_task(
@@ -80,12 +79,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.10.0",
+    version="1.11.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
 
-# ── Rate limiter (SlowAPI) ────────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -114,10 +112,11 @@ app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(standards.router, prefix="/api/v1")
 app.include_router(audit_logs.router, prefix="/api/v1")
 # Must come before bot.router: overrides /bot/checklists/today
-# (branch timezone + hides scheduled checklists until they open).
 app.include_router(bot_today.router, prefix="/api/v1")
 app.include_router(bot.router, prefix="/api/v1")
 app.include_router(bot_complete.router, prefix="/api/v1")
+# FaceID attendance — uses a separate database connection (ATTENDANCE_DATABASE_URL)
+app.include_router(attendance.router, prefix="/api/v1")
 
 
 @app.get("/health")
