@@ -4,7 +4,7 @@ export type EmployeeDay = {
   employee_id: string;
   full_name: string;
   device_name: string | null;
-  /** Дата начала смены (YYYY-MM-DD) — день, когда смена открылась в 06:00 */
+  /** Дата начала смены (YYYY-MM-DD) */
   date: string;
   first_in: string | null;
   last_out: string | null;
@@ -12,19 +12,19 @@ export type EmployeeDay = {
   is_late: boolean;
   left_early: boolean;
   absent: boolean;
+  /** Ставка за смену (из основной БД) */
+  rate_per_shift: number | null;
+  currency: string;
   logs: AccessLog[];
 };
 
 export type ReportPeriod = "day" | "week" | "month";
 
-// ── Параметры смены ──────────────────────────────────────────────────────────
 // Смена: 06:00 → 05:59 следующего дня.
-// События в 00:00-05:59 относятся к смене предыдущего дня.
 const SHIFT_CUTOFF_MINUTES = 6 * 60; // 06:00
 
-// Эталонное начало смены (опоздание считается от этого времени)
 const WORK_START = "09:00";
-// Ожидаемое время ухода — 01:00 следующего дня (в смено-минутах = 25*60)
+// Ожидаемый уход — 01:00 следующего дня
 const WORK_END = "01:00";
 
 function parseTime(timeStr: string): number {
@@ -32,19 +32,11 @@ function parseTime(timeStr: string): number {
   return (h ?? 0) * 60 + (m ?? 0);
 }
 
-/**
- * Переводим HH:MM в "минуты смены".
- * Если время < 06:00 — это ночь после полуночи, добавляем 24ч.
- */
 function toShiftMinutes(timeStr: string): number {
   const mins = parseTime(timeStr);
   return mins < SHIFT_CUTOFF_MINUTES ? mins + 24 * 60 : mins;
 }
 
-/**
- * По access_date и access_time определяем "дату смены".
- * Если время < 06:00 → смена принадлежит предыдущему дню.
- */
 function shiftDate(accessDate: string, accessTime: string): string {
   const mins = parseTime(accessTime);
   if (mins < SHIFT_CUTOFF_MINUTES) {
@@ -72,7 +64,6 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
   for (const [key, dayLogs] of map.entries()) {
     const [employee_id, date] = key.split("__") as [string, string];
 
-    // Сортируем по смено-минутам — ночные события встают в конец
     const sorted = [...dayLogs].sort((a, b) => {
       const ta = toShiftMinutes(a.access_time ?? "00:00");
       const tb = toShiftMinutes(b.access_time ?? "00:00");
@@ -85,7 +76,6 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
     const first_in = ins[0]?.access_time?.slice(0, 5) ?? null;
     const last_out = outs[outs.length - 1]?.access_time?.slice(0, 5) ?? null;
 
-    // Отработано в минутах смены
     let worked_minutes: number | null = null;
     if (first_in && last_out) {
       const inMins = toShiftMinutes(first_in);
@@ -93,12 +83,10 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
       worked_minutes = outMins > inMins ? outMins - inMins : null;
     }
 
-    // Опоздание: пришёл позже WORK_START + 5 мин
     const is_late = first_in
       ? toShiftMinutes(first_in) > toShiftMinutes(WORK_START) + 5
       : false;
 
-    // Ранний уход: ушёл до WORK_END - 5 мин (01:00 = 25*60 в смено-минутах)
     const workEndShift = toShiftMinutes(WORK_END);
     const left_early = last_out
       ? toShiftMinutes(last_out) < workEndShift - 5
@@ -107,6 +95,10 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
     const sample = sorted[0];
     const full_name =
       [sample?.first_name, sample?.last_name].filter(Boolean).join(" ") || employee_id;
+
+    // Ставка берётся из первого лога смены (все логи одного сотрудника имеют одну ставку)
+    const rate_per_shift = sample?.rate_per_shift ?? null;
+    const currency = sample?.currency ?? "UZS";
 
     result.push({
       employee_id,
@@ -119,6 +111,8 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
       is_late,
       left_early,
       absent: false,
+      rate_per_shift,
+      currency,
       logs: sorted,
     });
   }
@@ -133,6 +127,13 @@ export function formatMinutes(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${h}ч ${m}м`;
+}
+
+export function formatMoney(amount: number, currency: string): string {
+  if (currency === "UZS") {
+    return new Intl.NumberFormat("ru-UZ").format(Math.round(amount)) + " сум";
+  }
+  return new Intl.NumberFormat("ru-RU", { style: "currency", currency }).format(amount);
 }
 
 export function todayStr(): string {
