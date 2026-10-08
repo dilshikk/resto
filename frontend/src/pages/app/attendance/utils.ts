@@ -37,12 +37,19 @@ function toShiftMinutes(timeStr: string): number {
   return mins < SHIFT_CUTOFF_MINUTES ? mins + 24 * 60 : mins;
 }
 
+/** Дата YYYY-MM-DD в локальном часовом поясе (toISOString даёт UTC и сдвигает день в Ташкенте). */
+export function toLocalIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function shiftDate(accessDate: string, accessTime: string): string {
   const mins = parseTime(accessTime);
   if (mins < SHIFT_CUTOFF_MINUTES) {
-    const d = new Date(`${accessDate}T00:00:00`);
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    const [y, m, d] = accessDate.split("-").map(Number);
+    return toLocalIso(new Date(y ?? 1970, (m ?? 1) - 1, (d ?? 1) - 1));
   }
   return accessDate;
 }
@@ -136,12 +143,51 @@ export function formatMoney(amount: number, currency: string): string {
   return new Intl.NumberFormat("ru-RU", { style: "currency", currency }).format(amount);
 }
 
+/** Число с пробелами между тысячами, без валюты. */
+export function formatNumber(amount: number): string {
+  return new Intl.NumberFormat("ru-RU").format(Math.round(amount));
+}
+
+/** "2026-10-08" -> "08.10" */
+export function shortDate(iso: string): string {
+  const [, m, d] = iso.split("-");
+  return `${d ?? ""}.${m ?? ""}`;
+}
+
 export function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalIso(new Date());
 }
 
 export function weekAgoStr(): string {
   const d = new Date();
   d.setDate(d.getDate() - 6);
-  return d.toISOString().slice(0, 10);
+  return toLocalIso(d);
+}
+
+export function monthStartStr(): string {
+  const d = new Date();
+  return toLocalIso(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+export type DateRange = { from: string; to: string };
+
+/** Месяц целиком: offset 0 - текущий, -1 - прошлый. */
+export function monthRange(offset = 0): DateRange {
+  const d = new Date();
+  return {
+    from: toLocalIso(new Date(d.getFullYear(), d.getMonth() + offset, 1)),
+    to: toLocalIso(new Date(d.getFullYear(), d.getMonth() + offset + 1, 0)),
+  };
+}
+
+/** Половина текущего месяца: 1-15 или 16-конец. */
+export function halfMonthRange(half: 1 | 2): DateRange {
+  const full = monthRange(0);
+  const prefix = full.from.slice(0, 8);
+  return half === 1 ? { from: `${prefix}01`, to: `${prefix}15` } : { from: `${prefix}16`, to: full.to };
+}
+
+/** Число дней в периоде включительно. */
+export function periodLength(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
 }
