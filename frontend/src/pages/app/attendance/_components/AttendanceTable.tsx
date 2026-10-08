@@ -1,16 +1,6 @@
 import { useState } from "react";
 import type { EmployeeDay } from "../utils.ts";
 import { formatMinutes } from "../utils.ts";
-import { Badge } from "@/components/ui/badge.tsx";
-import { Button } from "@/components/ui/button.tsx";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table.tsx";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
@@ -37,111 +27,107 @@ export default function AttendanceTable({ rows }: Props) {
 
   return (
     <div className="overflow-hidden rounded-xl border">
-      <Table>
-        <TableHeader>
-          <TableRow className="bg-muted/50">
-            <TableHead className="w-8" />
-            <TableHead>Сотрудник</TableHead>
-            <TableHead>Дата</TableHead>
-            <TableHead>Приход</TableHead>
-            <TableHead>Уход</TableHead>
-            <TableHead>Отработано</TableHead>
-            <TableHead>Устройство</TableHead>
-            <TableHead>Статус</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) => {
-            const key = `${row.employee_id}__${row.date}`;
-            const isOpen = expanded.has(key);
-            return (
-              <>
-                <TableRow
-                  key={key}
-                  className={cn(
-                    "cursor-pointer transition-colors hover:bg-muted/30",
-                    row.absent && "opacity-60",
-                  )}
-                  onClick={() => toggle(key)}
-                >
-                  <TableCell className="py-3">
-                    <Button variant="ghost" size="icon" className="h-6 w-6">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/50 text-xs text-muted-foreground">
+              <th className="w-8 px-2 py-3" />
+              <th className="px-3 py-3 text-left font-semibold">Сотрудник</th>
+              <th className="px-3 py-3 text-left font-semibold">Дата</th>
+              <th className="px-3 py-3 text-left font-semibold">Приход</th>
+              <th className="px-3 py-3 text-left font-semibold">Уход</th>
+              <th className="px-3 py-3 text-left font-semibold">Отработано</th>
+              <th className="px-3 py-3 text-left font-semibold">Устройство</th>
+              <th className="px-3 py-3 text-left font-semibold">Статус</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const key = `${row.employee_id}__${row.date}`;
+              const isOpen = expanded.has(key);
+              return (
+                <>
+                  <tr
+                    key={key}
+                    onClick={() => toggle(key)}
+                    className={cn(
+                      "cursor-pointer border-b transition-colors hover:bg-muted/30",
+                      row.absent && "opacity-60",
+                    )}
+                  >
+                    <td className="px-2 py-3 text-center">
                       {isOpen ? (
-                        <ChevronDown className="h-3 w-3" />
+                        <ChevronDown className="inline-block h-3.5 w-3.5 text-muted-foreground" />
                       ) : (
-                        <ChevronRight className="h-3 w-3" />
+                        <ChevronRight className="inline-block h-3.5 w-3.5 text-muted-foreground" />
                       )}
-                    </Button>
-                  </TableCell>
-                  <TableCell className="font-medium">{row.full_name}</TableCell>
-                  <TableCell className="text-muted-foreground">{row.date}</TableCell>
-                  <TableCell>
-                    {row.first_in ? (
-                      <span
-                        className={
-                          row.is_late
-                            ? "font-medium text-amber-600"
-                            : "font-medium text-emerald-600"
-                        }
-                      >
-                        {row.first_in}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {row.last_out ? (
-                      <span
-                        className={
-                          row.left_early ? "font-medium text-blue-600" : "text-foreground"
-                        }
-                      >
-                        {row.last_out}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {row.worked_minutes != null ? (
-                      <span className="font-medium">{formatMinutes(row.worked_minutes)}</span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {row.device_name ?? "—"}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {row.absent && (
-                        <Badge variant="destructive" className="text-xs">
-                          Отсутствует
-                        </Badge>
+                    </td>
+                    <td className="px-3 py-3 font-medium">{row.full_name}</td>
+                    <td className="px-3 py-3 text-muted-foreground">{row.date}</td>
+                    <td className="px-3 py-3">
+                      {row.first_in ? (
+                        <span
+                          className={
+                            row.is_late
+                              ? "font-medium text-amber-600"
+                              : "font-medium text-emerald-600"
+                          }
+                        >
+                          {row.first_in}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
                       )}
-                      {row.is_late && (
-                        <Badge className="border-amber-200 bg-amber-100 text-xs text-amber-700">
-                          Опоздание
-                        </Badge>
+                    </td>
+                    <td className="px-3 py-3">
+                      {row.last_out ? (
+                        <span
+                          className={row.left_early ? "font-medium text-blue-600" : ""}
+                        >
+                          {row.last_out}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
                       )}
-                      {row.left_early && (
-                        <Badge className="border-blue-200 bg-blue-100 text-xs text-blue-700">
-                          Ранний уход
-                        </Badge>
+                    </td>
+                    <td className="px-3 py-3">
+                      {row.worked_minutes != null ? (
+                        <span className="font-medium">{formatMinutes(row.worked_minutes)}</span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
                       )}
-                      {!row.absent && !row.is_late && !row.left_early && (
-                        <Badge className="border-emerald-200 bg-emerald-100 text-xs text-emerald-700">
-                          Норма
-                        </Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-                {isOpen && (
-                  <TableRow key={`${key}__detail`} className="bg-muted/20">
-                    <TableCell colSpan={8} className="py-0">
-                      <div className="py-3 pl-8">
+                    </td>
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {row.device_name ?? "—"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {row.absent && (
+                          <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive">
+                            Отсутствует
+                          </span>
+                        )}
+                        {row.is_late && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                            Опоздание
+                          </span>
+                        )}
+                        {row.left_early && (
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                            Ранний уход
+                          </span>
+                        )}
+                        {!row.absent && !row.is_late && !row.left_early && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                            Норма
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr key={`${key}__detail`} className="border-b bg-muted/20">
+                      <td colSpan={8} className="px-4 py-3 pl-10">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                           Все события за {row.date}
                         </p>
@@ -152,8 +138,8 @@ export default function AttendanceTable({ rows }: Props) {
                               className={cn(
                                 "flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs",
                                 log.direction?.toLowerCase() === "in"
-                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                  : "border-rose-200 bg-rose-50 text-rose-700",
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30"
+                                  : "border-rose-200 bg-rose-50 text-rose-700 dark:bg-rose-950/30",
                               )}
                             >
                               <span className="font-medium">{log.access_time}</span>
@@ -166,15 +152,15 @@ export default function AttendanceTable({ rows }: Props) {
                             </div>
                           ))}
                         </div>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </>
-            );
-          })}
-        </TableBody>
-      </Table>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
