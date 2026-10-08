@@ -37,6 +37,7 @@ from app.routers import (
 )
 from app.routers import attendance
 from app.routers import attendance_rates
+from app.routers import attendance_payroll
 
 
 @asynccontextmanager
@@ -103,6 +104,8 @@ app.include_router(bot_complete.router, prefix="/api/v1")
 app.include_router(attendance.router, prefix="/api/v1")
 # Ставки сотрудников FaceID — основная БД
 app.include_router(attendance_rates.router, prefix="/api/v1")
+# Табель и расчёт зарплаты по FaceID (ручные правки в основной БД)
+app.include_router(attendance_payroll.router, prefix="/api/v1")
 
 
 @app.get("/health")

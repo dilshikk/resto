@@ -64,3 +64,76 @@ export async function upsertAttendanceRate(
   );
   return data;
 }
+
+// ── Табель и расчёт зарплаты ────────────────────────────────────────────────────────────
+
+export type PayrollDay = {
+  /** Итоговое время прихода (ручное, если есть, иначе FaceID) */
+  arrival: string | null;
+  departure: string | null;
+  faceid_arrival: string | null;
+  faceid_departure: string | null;
+  /** Время прихода/ухода было изменено вручную */
+  manual: boolean;
+  /** День засчитан: есть и приход, и уход */
+  counted: boolean;
+};
+
+export type PayrollEmployee = {
+  employee_id: string;
+  name: string;
+  position: string | null;
+  rate_per_shift: number;
+  currency: string;
+  /** Ключ - дата начала смены YYYY-MM-DD */
+  days: Record<string, PayrollDay>;
+  worked_days: number;
+  bonus: number;
+  fine: number;
+  posuda: number;
+  gross: number;
+  net: number;
+};
+
+export type Payroll = {
+  date_from: string;
+  date_to: string;
+  dates: string[];
+  employees: PayrollEmployee[];
+};
+
+export type AdjustmentField = "bonus" | "fine" | "posuda";
+
+export async function fetchPayroll(dateFrom: string, dateTo: string): Promise<Payroll> {
+  const { data } = await apiClient.get<Payroll>("/attendance-payroll", {
+    params: { date_from: dateFrom, date_to: dateTo },
+  });
+  return data;
+}
+
+export async function savePayrollPunch(body: {
+  faceid_employee_id: string;
+  shift_date: string;
+  arrival: string | null;
+  departure: string | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/punch", body);
+}
+
+export async function savePayrollAdjustment(body: {
+  faceid_employee_id: string;
+  date_from: string;
+  date_to: string;
+  bonus?: number;
+  fine?: number;
+  posuda?: number;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/adjustment", body);
+}
+
+export async function savePayrollPosition(body: {
+  faceid_employee_id: string;
+  position: string | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/position", body);
+}

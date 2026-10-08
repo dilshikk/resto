@@ -12,6 +12,11 @@ from app.models.audit_log import AuditLog
 from app.models.revoked_token import RevokedToken
 from app.models.login_attempt import LoginAttempt
 from app.models.attendance_rate import AttendanceRate
+from app.models.attendance_payroll import (
+    AttendancePunchOverride,
+    AttendancePayrollAdjustment,
+    AttendanceEmployeeProfile,
+)
 
 __all__ = [
     "Branch", "Role", "Employee", "EmployeeAccount", "User",
@@ -24,4 +29,7 @@ __all__ = [
     "RevokedToken",
     "LoginAttempt",
     "AttendanceRate",
+    "AttendancePunchOverride",
+    "AttendancePayrollAdjustment",
+    "AttendanceEmployeeProfile",
 ]
