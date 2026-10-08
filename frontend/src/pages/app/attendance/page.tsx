@@ -1,21 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import {
-  fetchAttendanceLogs,
-  fetchAttendanceEmployees,
-} from "@/api/attendance.ts";
+import { fetchAttendanceLogs, fetchAttendanceEmployees } from "@/api/attendance.ts";
 import {
   groupLogsByEmployeeDay,
   todayStr,
   weekAgoStr,
   formatMinutes,
+  formatMoney,
   type EmployeeDay,
   type ReportPeriod,
 } from "./utils.ts";
 import FiltersBar from "./_components/FiltersBar.tsx";
 import StatsCards from "./_components/StatsCards.tsx";
 import AttendanceTable from "./_components/AttendanceTable.tsx";
+import RatesDialog from "./_components/RatesDialog.tsx";
 import { Download } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -25,6 +24,7 @@ export default function AttendancePage() {
   const [dateTo, setDateTo] = useState(todayStr());
   const [employeeId, setEmployeeId] = useState("");
   const [rows, setRows] = useState<EmployeeDay[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const { data: employees = [] } = useQuery({
     queryKey: ["attendance-employees"],
@@ -42,15 +42,11 @@ export default function AttendancePage() {
       setDateTo(today);
     } else {
       const d = new Date();
-      const first = new Date(d.getFullYear(), d.getMonth(), 1)
-        .toISOString()
-        .slice(0, 10);
+      const first = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
       setDateFrom(first);
       setDateTo(today);
     }
   };
-
-  const [loading, setLoading] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -72,6 +68,12 @@ export default function AttendancePage() {
     void loadData();
   }, [loadData]);
 
+  // Итоговая сумма зарплаты за период
+  const totalSalary = rows.reduce((sum, r) => sum + (r.rate_per_shift ?? 0), 0);
+  const hasSalary = rows.some((r) => r.rate_per_shift != null && r.rate_per_shift > 0);
+  // Валюта — берём из первой строки с ненулевой ставкой
+  const salCurrency = rows.find((r) => r.rate_per_shift != null)?.currency ?? "UZS";
+
   const exportExcel = () => {
     const data = rows.map((r) => ({
       Сотрудник: r.full_name,
@@ -79,6 +81,8 @@ export default function AttendancePage() {
       Приход: r.first_in ?? "—",
       Уход: r.last_out ?? "—",
       Отработано: r.worked_minutes != null ? formatMinutes(r.worked_minutes) : "—",
+      "Ставка за смену": r.rate_per_shift != null ? r.rate_per_shift : "—",
+      Валюта: r.currency,
       Устройство: r.device_name ?? "—",
       Опоздание: r.is_late ? "Да" : "Нет",
       "Ранний уход": r.left_early ? "Да" : "Нет",
@@ -100,15 +104,18 @@ export default function AttendancePage() {
             Учёт посещаемости сотрудников на основе Face ID
           </p>
         </div>
-        <button
-          type="button"
-          onClick={exportExcel}
-          disabled={rows.length === 0}
-          className="flex cursor-pointer items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Download className="h-4 w-4" />
-          Экспорт Excel
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <RatesDialog />
+          <button
+            type="button"
+            onClick={exportExcel}
+            disabled={rows.length === 0}
+            className="flex cursor-pointer items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+            Экспорт Excel
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -129,7 +136,20 @@ export default function AttendancePage() {
       {/* Stats */}
       <StatsCards rows={rows} totalEmployees={employees.length || rows.length} />
 
-      {/* Loading overlay */}
+      {/* Итог зарплаты */}
+      {hasSalary && (
+        <div className="rounded-xl border bg-card px-6 py-4 shadow-sm">
+          <p className="text-sm text-muted-foreground">Итого зарплата за период</p>
+          <p className="mt-1 text-2xl font-bold text-emerald-600">
+            {formatMoney(totalSalary, salCurrency)}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {rows.filter((r) => r.rate_per_shift != null && r.rate_per_shift > 0).length} смен(ы) с заданной ставкой
+          </p>
+        </div>
+      )}
+
+      {/* Loading */}
       {loading && (
         <div className="flex items-center justify-center py-12">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-60" />
