@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { EmployeeDay } from "../utils.ts";
-import { formatMinutes } from "../utils.ts";
+import { formatMinutes, formatMoney } from "../utils.ts";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
@@ -37,6 +37,7 @@ export default function AttendanceTable({ rows }: Props) {
               <th className="px-3 py-3 text-left font-semibold">Приход</th>
               <th className="px-3 py-3 text-left font-semibold">Уход</th>
               <th className="px-3 py-3 text-left font-semibold">Отработано</th>
+              <th className="px-3 py-3 text-left font-semibold">Ставка/смена</th>
               <th className="px-3 py-3 text-left font-semibold">Устройство</th>
               <th className="px-3 py-3 text-left font-semibold">Статус</th>
             </tr>
@@ -66,13 +67,7 @@ export default function AttendanceTable({ rows }: Props) {
                     <td className="px-3 py-3 text-muted-foreground">{row.date}</td>
                     <td className="px-3 py-3">
                       {row.first_in ? (
-                        <span
-                          className={
-                            row.is_late
-                              ? "font-medium text-amber-600"
-                              : "font-medium text-emerald-600"
-                          }
-                        >
+                        <span className={row.is_late ? "font-medium text-amber-600" : "font-medium text-emerald-600"}>
                           {row.first_in}
                         </span>
                       ) : (
@@ -81,9 +76,7 @@ export default function AttendanceTable({ rows }: Props) {
                     </td>
                     <td className="px-3 py-3">
                       {row.last_out ? (
-                        <span
-                          className={row.left_early ? "font-medium text-blue-600" : ""}
-                        >
+                        <span className={row.left_early ? "font-medium text-blue-600" : ""}>
                           {row.last_out}
                         </span>
                       ) : (
@@ -97,9 +90,16 @@ export default function AttendanceTable({ rows }: Props) {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-3 text-muted-foreground">
-                      {row.device_name ?? "—"}
+                    <td className="px-3 py-3">
+                      {row.rate_per_shift != null && row.rate_per_shift > 0 ? (
+                        <span className="font-medium text-emerald-600">
+                          {formatMoney(row.rate_per_shift, row.currency)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">не задана</span>
+                      )}
                     </td>
+                    <td className="px-3 py-3 text-muted-foreground">{row.device_name ?? "—"}</td>
                     <td className="px-3 py-3">
                       <div className="flex flex-wrap gap-1">
                         {row.absent && (
@@ -127,7 +127,7 @@ export default function AttendanceTable({ rows }: Props) {
                   </tr>
                   {isOpen && (
                     <tr key={`${key}__detail`} className="border-b bg-muted/20">
-                      <td colSpan={8} className="px-4 py-3 pl-10">
+                      <td colSpan={9} className="px-4 py-3 pl-10">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                           Все события за {row.date}
                         </p>
@@ -143,12 +143,8 @@ export default function AttendanceTable({ rows }: Props) {
                               )}
                             >
                               <span className="font-medium">{log.access_time}</span>
-                              <span>
-                                {log.direction?.toLowerCase() === "in" ? "↑ вход" : "↓ выход"}
-                              </span>
-                              {log.device_name && (
-                                <span className="opacity-70">{log.device_name}</span>
-                              )}
+                              <span>{log.direction?.toLowerCase() === "in" ? "↑ вход" : "↓ выход"}</span>
+                              {log.device_name && <span className="opacity-70">{log.device_name}</span>}
                             </div>
                           ))}
                         </div>
