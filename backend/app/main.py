@@ -36,6 +36,7 @@ from app.routers import (
     schedules,
 )
 from app.routers import attendance
+from app.routers import attendance_rates
 
 
 @asynccontextmanager
@@ -45,26 +46,11 @@ async def lifespan(app: FastAPI):
 
     login_attempt_tracker.configure(AsyncSessionLocal)
 
-    cleanup_task = asyncio.create_task(
-        run_revoked_token_cleanup_loop(),
-        name="revoked_token_cleanup",
-    )
-    scheduler_task = asyncio.create_task(
-        run_checklist_scheduler_loop(),
-        name="checklist_scheduler",
-    )
-    escalation_task = asyncio.create_task(
-        run_overdue_escalation_loop(),
-        name="overdue_escalation",
-    )
-    login_cleanup_task = asyncio.create_task(
-        run_login_attempt_cleanup_loop(),
-        name="login_attempt_cleanup",
-    )
-    schedule_task = asyncio.create_task(
-        run_schedule_generator_loop(),
-        name="schedule_generator",
-    )
+    cleanup_task = asyncio.create_task(run_revoked_token_cleanup_loop(), name="revoked_token_cleanup")
+    scheduler_task = asyncio.create_task(run_checklist_scheduler_loop(), name="checklist_scheduler")
+    escalation_task = asyncio.create_task(run_overdue_escalation_loop(), name="overdue_escalation")
+    login_cleanup_task = asyncio.create_task(run_login_attempt_cleanup_loop(), name="login_attempt_cleanup")
+    schedule_task = asyncio.create_task(run_schedule_generator_loop(), name="schedule_generator")
 
     try:
         yield
@@ -79,7 +65,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MADO Checklist API",
-    version="1.11.0",
+    version="1.12.0",
     description="Система контроля операционных стандартов ресторанов MADO",
     lifespan=lifespan,
 )
@@ -101,7 +87,6 @@ app.include_router(roles.router, prefix="/api/v1")
 app.include_router(employees.router, prefix="/api/v1")
 app.include_router(employee_removal.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
-# Must come before checklists.router: overrides /complete to add the PDF report.
 app.include_router(checklist_complete_report.router, prefix="/api/v1")
 app.include_router(checklists.router, prefix="/api/v1")
 app.include_router(schedules.router, prefix="/api/v1")
@@ -111,12 +96,13 @@ app.include_router(shifts.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
 app.include_router(standards.router, prefix="/api/v1")
 app.include_router(audit_logs.router, prefix="/api/v1")
-# Must come before bot.router: overrides /bot/checklists/today
 app.include_router(bot_today.router, prefix="/api/v1")
 app.include_router(bot.router, prefix="/api/v1")
 app.include_router(bot_complete.router, prefix="/api/v1")
-# FaceID attendance — uses a separate database connection (ATTENDANCE_DATABASE_URL)
+# FaceID посещаемость — отдельная БД (ATTENDANCE_DATABASE_URL)
 app.include_router(attendance.router, prefix="/api/v1")
+# Ставки сотрудников FaceID — основная БД
+app.include_router(attendance_rates.router, prefix="/api/v1")
 
 
 @app.get("/health")
