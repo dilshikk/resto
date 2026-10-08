@@ -1,22 +1,18 @@
 """
-Роутер посещаемости (FaceID).
-
-Читает данные из отдельной БД FaceID через attendance_database.py.
-Все эндпоинты требуют JWT авторизации.
-
-Логика смен: смена начинается в 06:00 и заканчивается в 06:00 следующего дня.
-Поэтому для запроса за дату D нужны события с D 06:00 по (D+1) 06:00.
-Для диапазона date_from..date_to берём события с date_from по date_to+1 день.
+Роутер посещаемости (FaceID) + ставки из основной БД.
 """
 from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance_database import get_attendance_db
-from app.auth import get_current_web_user
+from app.auth import get_current_web_user, require_manager
+from app.database import get_db
+from app.models.attendance_rate import AttendanceRate
+from app.models.employee import Employee
 from app.models.user import User
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -28,21 +24,15 @@ async def get_attendance_logs(
     date_to: date = Query(..., description="Конец периода YYYY-MM-DD"),
     employee_id: Optional[str] = Query(None, description="Фильтр по ID сотрудника"),
     _current_user: User = Depends(get_current_web_user),
-    db: AsyncSession = Depends(get_attendance_db),
+    attendance_db: AsyncSession = Depends(get_attendance_db),
+    main_db: AsyncSession = Depends(get_db),
 ):
     """
-    Возвращает журнал событий FaceID за указанный период.
-
-    Диапазон расширяется на +1 день в конце, чтобы захватить ночные
-    события (00:00-05:59), принадлежащие смене последнего запрошенного дня.
+    Возвращает журнал FaceID + ставки из основной БД.
+    Диапазон расширяется на +1 день чтобы захватить ночные события смены.
     """
-    # Расширяем диапазон на +1 день чтобы захватить ночные события смены
     extended_to = date_to + timedelta(days=1)
-
-    params: dict = {
-        "date_from": str(date_from),
-        "date_to": str(extended_to),
-    }
+    params: dict = {"date_from": str(date_from), "date_to": str(extended_to)}
 
     if employee_id:
         params["employee_id"] = employee_id
@@ -50,7 +40,7 @@ async def get_attendance_logs(
     else:
         employee_filter = ""
 
-    result = await db.execute(
+    result = await attendance_db.execute(
         text(
             f"""
             SELECT id, employee_id, access_datetime, access_date, access_time,
@@ -64,18 +54,33 @@ async def get_attendance_logs(
         ),
         params,
     )
+    logs = [dict(r) for r in result.mappings().all()]
 
-    rows = result.mappings().all()
-    return [dict(r) for r in rows]
+    # Загружаем ставки из основной БД одним запросом
+    rates_rows = (await main_db.execute(select(AttendanceRate))).scalars().all()
+    rates_map: dict[str, dict] = {
+        r.faceid_employee_id: {"rate_per_shift": float(r.rate_per_shift), "currency": r.currency}
+        for r in rates_rows
+    }
+
+    # Добавляем ставку к каждому логу
+    for log in logs:
+        eid = log.get("employee_id") or ""
+        rate_info = rates_map.get(eid)
+        log["rate_per_shift"] = rate_info["rate_per_shift"] if rate_info else None
+        log["currency"] = rate_info["currency"] if rate_info else "UZS"
+
+    return logs
 
 
 @router.get("/employees")
 async def get_attendance_employees(
     _current_user: User = Depends(get_current_web_user),
-    db: AsyncSession = Depends(get_attendance_db),
+    attendance_db: AsyncSession = Depends(get_attendance_db),
+    main_db: AsyncSession = Depends(get_db),
 ):
-    """Возвращает список уникальных сотрудников из журнала FaceID."""
-    result = await db.execute(
+    """Возвращает список уникальных сотрудников + их ставки."""
+    result = await attendance_db.execute(
         text(
             """
             SELECT DISTINCT employee_id, first_name, last_name
@@ -85,5 +90,18 @@ async def get_attendance_employees(
             """
         )
     )
-    rows = result.mappings().all()
-    return [dict(r) for r in rows]
+    employees = [dict(r) for r in result.mappings().all()]
+
+    rates_rows = (await main_db.execute(select(AttendanceRate))).scalars().all()
+    rates_map = {
+        r.faceid_employee_id: {"rate_per_shift": float(r.rate_per_shift), "currency": r.currency}
+        for r in rates_rows
+    }
+
+    for emp in employees:
+        eid = emp.get("employee_id") or ""
+        rate_info = rates_map.get(eid)
+        emp["rate_per_shift"] = rate_info["rate_per_shift"] if rate_info else None
+        emp["currency"] = rate_info["currency"] if rate_info else "UZS"
+
+    return employees
