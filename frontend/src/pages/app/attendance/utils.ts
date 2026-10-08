@@ -18,16 +18,14 @@ export type EmployeeDay = {
 export type ReportPeriod = "day" | "week" | "month";
 
 // ── Параметры смены ──────────────────────────────────────────────────────────
-// Смена открывается в SHIFT_START и закрывается в SHIFT_END следующего дня.
-// Все события с 00:00 до SHIFT_CUTOFF-1 считаются ещё прошлым днём смены.
-const SHIFT_START_MINUTES = 6 * 60; // 06:00 — начало смены
-const SHIFT_END_MINUTES = 24 * 60 + 5 * 60; // 30:00 = 06:00 след. дня (крайняя граница)
-const SHIFT_CUTOFF_MINUTES = 6 * 60; // события до 06:00 → смена предыдущего дня
+// Смена: 06:00 → 05:59 следующего дня.
+// События в 00:00-05:59 относятся к смене предыдущего дня.
+const SHIFT_CUTOFF_MINUTES = 6 * 60; // 06:00
 
 // Эталонное начало смены (опоздание считается от этого времени)
 const WORK_START = "09:00";
-// Ожидаемый уход (ранний уход — если ушёл раньше)
-const WORK_END = "01:00"; // 01:00 следующего дня → 25 * 60 = 1500 мин в "смено-минутах"
+// Ожидаемое время ухода — 01:00 следующего дня (в смено-минутах = 25*60)
+const WORK_END = "01:00";
 
 function parseTime(timeStr: string): number {
   const [h, m] = timeStr.split(":").map(Number);
@@ -35,9 +33,8 @@ function parseTime(timeStr: string): number {
 }
 
 /**
- * Переводим access_time (HH:MM:SS) в "минуты смены".
- * Если время < SHIFT_CUTOFF (до 06:00) — считаем это продолжением ночи,
- * добавляем 24*60 чтобы оно оказалось после полуночи в шкале смены.
+ * Переводим HH:MM в "минуты смены".
+ * Если время < 06:00 — это ночь после полуночи, добавляем 24ч.
  */
 function toShiftMinutes(timeStr: string): number {
   const mins = parseTime(timeStr);
@@ -45,15 +42,12 @@ function toShiftMinutes(timeStr: string): number {
 }
 
 /**
- * По access_date (YYYY-MM-DD) и access_time (HH:MM:SS) определяем
- * "дату смены" — день, когда смена началась.
- *
- * Правило: если время < 06:00 → смена принадлежит предыдущему дню.
+ * По access_date и access_time определяем "дату смены".
+ * Если время < 06:00 → смена принадлежит предыдущему дню.
  */
 function shiftDate(accessDate: string, accessTime: string): string {
   const mins = parseTime(accessTime);
   if (mins < SHIFT_CUTOFF_MINUTES) {
-    // Вычитаем один день
     const d = new Date(`${accessDate}T00:00:00`);
     d.setDate(d.getDate() - 1);
     return d.toISOString().slice(0, 10);
@@ -62,7 +56,6 @@ function shiftDate(accessDate: string, accessTime: string): string {
 }
 
 export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
-  // Группируем по (employee_id, дата-смены)
   const map = new Map<string, AccessLog[]>();
 
   for (const log of logs) {
@@ -79,7 +72,7 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
   for (const [key, dayLogs] of map.entries()) {
     const [employee_id, date] = key.split("__") as [string, string];
 
-    // Сортируем по "смено-минутам" — ночные события встают в конец
+    // Сортируем по смено-минутам — ночные события встают в конец
     const sorted = [...dayLogs].sort((a, b) => {
       const ta = toShiftMinutes(a.access_time ?? "00:00");
       const tb = toShiftMinutes(b.access_time ?? "00:00");
@@ -89,11 +82,8 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
     const ins = sorted.filter((l) => l.direction?.toLowerCase() === "in");
     const outs = sorted.filter((l) => l.direction?.toLowerCase() === "out");
 
-    const firstInLog = ins[0];
-    const lastOutLog = outs[outs.length - 1];
-
-    const first_in = firstInLog?.access_time?.slice(0, 5) ?? null;
-    const last_out = lastOutLog?.access_time?.slice(0, 5) ?? null;
+    const first_in = ins[0]?.access_time?.slice(0, 5) ?? null;
+    const last_out = outs[outs.length - 1]?.access_time?.slice(0, 5) ?? null;
 
     // Отработано в минутах смены
     let worked_minutes: number | null = null;
@@ -108,8 +98,7 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
       ? toShiftMinutes(first_in) > toShiftMinutes(WORK_START) + 5
       : false;
 
-    // Ранний уход: ушёл до WORK_END - 5 мин
-    // WORK_END "01:00" — в смено-минутах это 25*60=1500
+    // Ранний уход: ушёл до WORK_END - 5 мин (01:00 = 25*60 в смено-минутах)
     const workEndShift = toShiftMinutes(WORK_END);
     const left_early = last_out
       ? toShiftMinutes(last_out) < workEndShift - 5
