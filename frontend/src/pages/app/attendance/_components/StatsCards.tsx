@@ -1,6 +1,6 @@
 import type { EmployeeDay } from "../utils.ts";
-import { Card, CardContent } from "@/components/ui/card.tsx";
 import { Users, Clock, AlertTriangle, UserX } from "lucide-react";
+import { cn } from "@/lib/utils.ts";
 
 type Props = {
   rows: EmployeeDay[];
@@ -17,47 +17,45 @@ export default function StatsCards({ rows, totalEmployees }: Props) {
     {
       label: "Присутствуют",
       value: present,
-      icon: Users,
-      color: "text-emerald-500",
-      bg: "bg-emerald-50 dark:bg-emerald-950/30",
+      Icon: Users,
+      color: "text-emerald-600",
+      bg: "bg-emerald-100 dark:bg-emerald-900/30",
     },
     {
       label: "Отсутствуют",
       value: absent,
-      icon: UserX,
-      color: "text-rose-500",
-      bg: "bg-rose-50 dark:bg-rose-950/30",
+      Icon: UserX,
+      color: "text-destructive",
+      bg: "bg-destructive/10",
     },
     {
       label: "Опоздания",
       value: late,
-      icon: AlertTriangle,
-      color: "text-amber-500",
-      bg: "bg-amber-50 dark:bg-amber-950/30",
+      Icon: AlertTriangle,
+      color: "text-amber-600",
+      bg: "bg-amber-100 dark:bg-amber-900/30",
     },
     {
       label: "Ранний уход",
       value: leftEarly,
-      icon: Clock,
-      color: "text-blue-500",
-      bg: "bg-blue-50 dark:bg-blue-950/30",
+      Icon: Clock,
+      color: "text-blue-600",
+      bg: "bg-blue-100 dark:bg-blue-900/30",
     },
   ];
 
   return (
     <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
       {stats.map((s) => (
-        <Card key={s.label} className="border-0 shadow-sm">
-          <CardContent className="flex items-center gap-3 py-4">
-            <div className={`rounded-xl p-2.5 ${s.bg}`}>
-              <s.icon className={`h-5 w-5 ${s.color}`} />
+        <div key={s.label} className="rounded-xl border bg-card p-5 shadow-sm">
+          <div className="mb-3 flex items-center gap-3">
+            <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-lg", s.bg)}>
+              <s.Icon className={cn("size-5", s.color)} />
             </div>
-            <div>
-              <p className="text-2xl font-bold leading-none">{s.value}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{s.label}</p>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+          <p className="text-3xl font-bold">{s.value}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{s.label}</p>
+        </div>
       ))}
     </div>
   );
