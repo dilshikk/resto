@@ -1,15 +1,7 @@
-import { Input } from "@/components/ui/input.tsx";
-import { Button } from "@/components/ui/button.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select.tsx";
 import { Calendar, RefreshCw } from "lucide-react";
 import type { AttendanceEmployee } from "@/api/attendance.ts";
 import type { ReportPeriod } from "../utils.ts";
+import { cn } from "@/lib/utils.ts";
 
 type Props = {
   dateFrom: string;
@@ -41,17 +33,18 @@ export default function FiltersBar({
   return (
     <div className="flex flex-wrap items-end gap-3">
       {/* Period quick select */}
-      <div className="flex gap-1 rounded-lg bg-muted p-1">
+      <div className="flex gap-1 rounded-lg bg-secondary p-1">
         {(["day", "week", "month"] as ReportPeriod[]).map((p) => (
           <button
             key={p}
             type="button"
             onClick={() => onPeriod(p)}
-            className={`cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+            className={cn(
+              "cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
               period === p
                 ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
+                : "text-muted-foreground hover:text-foreground",
+            )}
           >
             {p === "day" ? "День" : p === "week" ? "Неделя" : "Месяц"}
           </button>
@@ -61,49 +54,46 @@ export default function FiltersBar({
       {/* Date range */}
       <div className="flex items-center gap-2">
         <Calendar className="h-4 w-4 text-muted-foreground" />
-        <Input
+        <input
           type="date"
           value={dateFrom}
-          onChange={(e) => onDateFrom(e.target.value)}
-          className="h-9 w-36"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => onDateFrom(e.target.value)}
+          className="h-9 w-36 rounded-lg border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <span className="text-sm text-muted-foreground">—</span>
-        <Input
+        <input
           type="date"
           value={dateTo}
-          onChange={(e) => onDateTo(e.target.value)}
-          className="h-9 w-36"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => onDateTo(e.target.value)}
+          className="h-9 w-36 rounded-lg border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
 
       {/* Employee filter */}
-      <Select
+      <select
         value={employeeId || "all"}
-        onValueChange={(v) => onEmployee(v === "all" ? "" : v)}
+        onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+          onEmployee(e.target.value === "all" ? "" : e.target.value)
+        }
+        className="h-9 w-52 rounded-lg border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       >
-        <SelectTrigger className="h-9 w-48">
-          <SelectValue placeholder="Все сотрудники" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">Все сотрудники</SelectItem>
-          {employees.map((e) => (
-            <SelectItem key={e.employee_id} value={e.employee_id}>
-              {[e.first_name, e.last_name].filter(Boolean).join(" ") || e.employee_id}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        <option value="all">Все сотрудники</option>
+        {employees.map((emp) => (
+          <option key={emp.employee_id} value={emp.employee_id}>
+            {[emp.first_name, emp.last_name].filter(Boolean).join(" ") || emp.employee_id}
+          </option>
+        ))}
+      </select>
 
-      <Button
-        variant="secondary"
-        size="sm"
+      <button
+        type="button"
         onClick={onRefresh}
         disabled={loading}
-        className="h-9"
+        className="flex h-9 cursor-pointer items-center gap-2 rounded-lg border bg-secondary px-4 text-sm font-medium transition-colors hover:bg-secondary/80 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <RefreshCw className={`mr-1.5 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+        <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         Обновить
-      </Button>
+      </button>
     </div>
   );
 }
