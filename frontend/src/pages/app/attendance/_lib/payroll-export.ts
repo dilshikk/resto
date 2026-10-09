@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import type { Payroll } from "@/api/attendance.ts";
-import { shortDate } from "../utils.ts";
+import { shortDate } from "./utils.ts";
 
 type Cell = string | number;
 

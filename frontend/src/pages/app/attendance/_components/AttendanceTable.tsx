@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { EmployeeDay } from "../utils.ts";
-import { formatMinutes, formatMoney } from "../utils.ts";
+import type { EmployeeDay } from "../_lib/utils.ts";
+import { formatMinutes, formatMoney } from "../_lib/utils.ts";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 
