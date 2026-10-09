@@ -10,7 +10,6 @@ import {
   weekAgoStr,
   monthStartStr,
   formatMinutes,
-  formatMoney,
   type EmployeeDay,
   type ReportPeriod,
 } from "../utils.ts";
@@ -18,7 +17,7 @@ import FiltersBar from "./FiltersBar.tsx";
 import StatsCards from "./StatsCards.tsx";
 import AttendanceTable from "./AttendanceTable.tsx";
 
-// Журнал событий FaceID по дням (бывшее содержимое страницы)
+// Журнал событий FaceID по дням. Зарплата считается на вкладке «Табель и зарплата».
 export default function LogsTab() {
   const [period, setPeriod] = useState<ReportPeriod>("day");
   const [dateFrom, setDateFrom] = useState(todayStr());
@@ -67,12 +66,6 @@ export default function LogsTab() {
     void loadData();
   }, [loadData]);
 
-  // Итоговая сумма зарплаты за период
-  const totalSalary = rows.reduce((sum, r) => sum + (r.rate_per_shift ?? 0), 0);
-  const hasSalary = rows.some((r) => r.rate_per_shift != null && r.rate_per_shift > 0);
-  // Валюта — берём из первой строки с ненулевой ставкой
-  const salCurrency = rows.find((r) => r.rate_per_shift != null)?.currency ?? "UZS";
-
   const exportExcel = () => {
     const data = rows.map((r) => ({
       Сотрудник: r.full_name,
@@ -80,8 +73,6 @@ export default function LogsTab() {
       Приход: r.first_in ?? "—",
       Уход: r.last_out ?? "—",
       Отработано: r.worked_minutes != null ? formatMinutes(r.worked_minutes) : "—",
-      "Ставка за смену": r.rate_per_shift != null ? r.rate_per_shift : "—",
-      Валюта: r.currency,
       Устройство: r.device_name ?? "—",
       Опоздание: r.is_late ? "Да" : "Нет",
       "Ранний уход": r.left_early ? "Да" : "Нет",
@@ -121,18 +112,6 @@ export default function LogsTab() {
       </div>
 
       <StatsCards rows={rows} totalEmployees={employees.length || rows.length} />
-
-      {hasSalary && (
-        <div className="rounded-xl border bg-card px-6 py-4 shadow-sm">
-          <p className="text-sm text-muted-foreground">Итого зарплата за период</p>
-          <p className="mt-1 text-2xl font-bold text-emerald-600">
-            {formatMoney(totalSalary, salCurrency)}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {rows.filter((r) => r.rate_per_shift != null && r.rate_per_shift > 0).length} смен(ы) с заданной ставкой
-          </p>
-        </div>
-      )}
 
       {loading && (
         <div className="flex items-center justify-center py-12">

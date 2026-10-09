@@ -4,7 +4,16 @@ import {
   savePayrollAdjustment,
   savePayrollPosition,
   savePayrollPunch,
+  upsertAttendanceRate,
 } from "@/api/attendance.ts";
+
+type RateInput = {
+  employeeId: string;
+  name: string;
+  /** Ставка за час */
+  rate: number;
+  currency: string;
+};
 
 export function usePayrollMutations() {
   const qc = useQueryClient();
@@ -26,6 +35,19 @@ export function usePayrollMutations() {
     onSuccess: refresh,
     onError: fail,
   });
+  const rate = useMutation({
+    mutationFn: (input: RateInput) =>
+      upsertAttendanceRate(input.employeeId, {
+        display_name: input.name,
+        rate_per_shift: input.rate,
+        currency: input.currency,
+      }),
+    onSuccess: () => {
+      void refresh();
+      void qc.invalidateQueries({ queryKey: ["attendance-employees"] });
+    },
+    onError: fail,
+  });
 
-  return { punch, adjustment, position };
+  return { punch, adjustment, position, rate };
 }

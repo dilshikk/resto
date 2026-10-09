@@ -14,6 +14,7 @@ export type AccessLog = {
   last_name: string | null;
   card_no: string | null;
   direction: string | null;
+  /** Ставка за час (имя поля историческое) */
   rate_per_shift: number | null;
   currency: string;
 };
@@ -22,6 +23,7 @@ export type AttendanceEmployee = {
   employee_id: string;
   first_name: string | null;
   last_name: string | null;
+  /** Ставка за час (имя поля историческое) */
   rate_per_shift: number | null;
   currency: string;
 };
@@ -29,6 +31,7 @@ export type AttendanceEmployee = {
 export type AttendanceRate = {
   faceid_employee_id: string;
   display_name: string | null;
+  /** Ставка за час (имя поля историческое) */
   rate_per_shift: number;
   currency: string;
 };
@@ -65,7 +68,7 @@ export async function upsertAttendanceRate(
   return data;
 }
 
-// ── Табель и расчёт зарплаты ────────────────────────────────────────────────────────────
+// ── Табель и расчёт зарплаты ─────────────────────────────────────────────────
 
 export type PayrollDay = {
   /** Итоговое время прихода (ручное, если есть, иначе FaceID) */
@@ -75,19 +78,25 @@ export type PayrollDay = {
   faceid_departure: string | null;
   /** Время прихода/ухода было изменено вручную */
   manual: boolean;
-  /** День засчитан: есть и приход, и уход */
+  /** Смена засчитана: есть и приход, и уход, уход позже прихода */
   counted: boolean;
+  /** Отработано минут за смену */
+  minutes: number | null;
 };
 
 export type PayrollEmployee = {
   employee_id: string;
   name: string;
   position: string | null;
-  rate_per_shift: number;
+  /** Ставка за час */
+  rate_per_hour: number;
   currency: string;
   /** Ключ - дата начала смены YYYY-MM-DD */
   days: Record<string, PayrollDay>;
   worked_days: number;
+  worked_minutes: number;
+  /** Часы за период (с точностью до сотых) */
+  hours: number;
   bonus: number;
   fine: number;
   posuda: number;

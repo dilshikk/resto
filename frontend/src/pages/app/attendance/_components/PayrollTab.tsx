@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Calendar, Download, RefreshCw } from "lucide-react";
-import { fetchPayroll, type AdjustmentField } from "@/api/attendance.ts";
+import { fetchPayroll, type AdjustmentField, type PayrollEmployee } from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   formatNumber,
@@ -11,6 +11,7 @@ import {
   type DateRange,
 } from "../utils.ts";
 import { exportPayrollExcel } from "../_lib/payroll-export.ts";
+import { formatHours } from "../_lib/format-hours.ts";
 import { usePayrollMutations } from "../_hooks/use-payroll-mutations.ts";
 import PayrollTable from "./PayrollTable.tsx";
 import PunchDialog from "./PunchDialog.tsx";
@@ -31,7 +32,7 @@ export default function PayrollTab() {
   const [dateFrom, setDateFrom] = useState(initial.from);
   const [dateTo, setDateTo] = useState(initial.to);
   const [editing, setEditing] = useState<Editing | null>(null);
-  const { punch, adjustment, position } = usePayrollMutations();
+  const { punch, adjustment, position, rate } = usePayrollMutations();
 
   const length = dateFrom && dateTo ? periodLength(dateFrom, dateTo) : 0;
   const validPeriod = length >= 1 && length <= MAX_DAYS;
@@ -52,6 +53,14 @@ export default function PayrollTab() {
       [field]: value,
     });
 
+  const handleRate = (employee: PayrollEmployee, value: number) =>
+    rate.mutate({
+      employeeId: employee.employee_id,
+      name: employee.name,
+      rate: value,
+      currency: employee.currency,
+    });
+
   const handleSavePunch = (arrival: string | null, departure: string | null) => {
     if (!editing) return;
     punch.mutate(
@@ -66,8 +75,9 @@ export default function PayrollTab() {
   };
 
   const totalNet = data?.employees.reduce((acc, e) => acc + e.net, 0) ?? 0;
+  const totalMinutes = data?.employees.reduce((acc, e) => acc + e.worked_minutes, 0) ?? 0;
   const withoutRate =
-    data?.employees.filter((e) => e.rate_per_shift <= 0 && e.worked_days > 0).length ?? 0;
+    data?.employees.filter((e) => e.rate_per_hour <= 0 && e.worked_minutes > 0).length ?? 0;
 
   return (
     <div className="space-y-4">
@@ -138,13 +148,14 @@ export default function PayrollTab() {
       {data && data.employees.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
           <span className="text-muted-foreground">Сотрудников: {data.employees.length}</span>
+          <span className="text-muted-foreground">Часов всего: {formatHours(totalMinutes)}</span>
           <span>
             <span className="text-muted-foreground">К выдаче всего: </span>
             <span className="font-semibold text-emerald-600">{formatNumber(totalNet)}</span>
           </span>
           {withoutRate > 0 && (
             <span className="text-amber-600">
-              У {withoutRate} сотр. не задана ставка - задайте в «Ставки»
+              У {withoutRate} сотр. не задана ставка - введите её в колонке «Soatlik»
             </span>
           )}
         </div>
@@ -174,14 +185,16 @@ export default function PayrollTab() {
             payroll={data}
             onEditDay={(employeeId, date) => setEditing({ employeeId, date })}
             onAdjust={handleAdjust}
+            onRate={handleRate}
             onPosition={(employeeId, value) =>
               position.mutate({ faceid_employee_id: employeeId, position: value })
             }
           />
           <p className="text-xs text-muted-foreground">
-            Нажмите на время, чтобы указать приход и уход вручную. Синим выделено ручное время,
-            жёлтым - день без прихода или ухода (не засчитывается). Премия, штраф и посуда
-            сохраняются при выходе из поля.
+            Оплата почасовая: часы считаются по минутам от прихода до ухода. Ставку за час, премию,
+            штраф и посуду можно менять прямо в таблице, сохраняется при выходе из поля. Нажмите на
+            время, чтобы указать приход и уход вручную. Синим выделено ручное время, жёлтым - смена
+            без прихода или ухода (не считается).
           </p>
         </>
       )}
