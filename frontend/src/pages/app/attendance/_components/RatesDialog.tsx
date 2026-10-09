@@ -39,7 +39,9 @@ export default function RatesDialog() {
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
                 <h2 className="text-lg font-semibold">Ставки сотрудников</h2>
-                <p className="text-sm text-muted-foreground">Зарплата за одну смену</p>
+                <p className="text-sm text-muted-foreground">
+                  Оплата за один час. Ставку также можно менять прямо в табеле.
+                </p>
               </div>
               <button
                 type="button"
@@ -68,6 +70,7 @@ export default function RatesDialog() {
                       employee={emp}
                       onSaved={() => {
                         qc.invalidateQueries({ queryKey: ["attendance-employees"] });
+                        qc.invalidateQueries({ queryKey: ["attendance-payroll"] });
                       }}
                     />
                   ))}
@@ -127,10 +130,10 @@ function RateRow({
       <input
         type="number"
         min="0"
-        step="1000"
+        step="500"
         value={rate}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRate(e.target.value)}
-        placeholder="0"
+        placeholder="за час"
         className="h-8 w-32 rounded-md border bg-background px-2 text-right text-sm focus:outline-none focus:ring-2 focus:ring-ring"
       />
       <select

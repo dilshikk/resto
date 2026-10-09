@@ -4,10 +4,12 @@
 Правила:
 - Смена считается с 06:00 до 05:59 следующего дня. Ночной уход (01:00-03:00)
   относится к дню прихода.
-- День засчитывается только если есть и приход, и уход
-  (из FaceID или введённые вручную).
+- Смена засчитывается только если есть и приход, и уход
+  (из FaceID или введённые вручную) и уход позже прихода.
 - Ручные правки хранятся в основной БД и имеют приоритет над FaceID.
-- Начислено = дней * ставка + премия; К выдаче = начислено - штраф - посуда.
+- Оплата почасовая: часы считаются точно по минутам от прихода до ухода.
+  Ставка за час хранится в attendance_rates.rate_per_shift (имя колонки историческое).
+- Начислено = часы * ставка за час + премия; К выдаче = начислено - штраф - посуда.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -34,6 +36,7 @@ router = APIRouter(prefix="/attendance-payroll", tags=["attendance"])
 MAX_PERIOD_DAYS = 62
 SHIFT_CUTOFF_MINUTES = 6 * 60
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
+MONEY_STEP = Decimal("0.01")
 
 
 # ── Схемы ────────────────────────────────────────────────────────────────────
@@ -45,16 +48,20 @@ class PayrollDayOut(BaseModel):
     faceid_departure: str | None
     manual: bool
     counted: bool
+    # Отработано минут за смену (None, если смена не засчитана)
+    minutes: int | None
 
 
 class PayrollEmployeeOut(BaseModel):
     employee_id: str
     name: str
     position: str | None
-    rate_per_shift: float
+    rate_per_hour: float
     currency: str
     days: dict[str, PayrollDayOut]
     worked_days: int
+    worked_minutes: int
+    hours: float
     bonus: float
     fine: float
     posuda: float
@@ -114,6 +121,14 @@ def _shift_minutes(hhmm: str) -> int:
 
 def _shift_date(day: date, hhmm: str) -> date:
     return day - timedelta(days=1) if _to_minutes(hhmm) < SHIFT_CUTOFF_MINUTES else day
+
+
+def _day_minutes(arrival: str | None, departure: str | None) -> int | None:
+    """Длительность смены в минутах; None, если нет прихода/ухода или уход не позже прихода."""
+    if not arrival or not departure:
+        return None
+    diff = _shift_minutes(departure) - _shift_minutes(arrival)
+    return diff if diff > 0 else None
 
 
 def _to_date(value: object) -> date | None:
@@ -207,13 +222,15 @@ def _build_days(
         face_arrival, face_departure = _faceid_times(raw) if raw else (None, None)
         arrival = (override.arrival if override else None) or face_arrival
         departure = (override.departure if override else None) or face_departure
+        minutes = _day_minutes(arrival, departure)
         result[day.isoformat()] = PayrollDayOut(
             arrival=arrival,
             departure=departure,
             faceid_arrival=face_arrival,
             faceid_departure=face_departure,
             manual=bool(override and (override.arrival or override.departure)),
-            counted=bool(arrival and departure),
+            counted=minutes is not None,
+            minutes=minutes,
         )
     return result
 
@@ -228,7 +245,7 @@ async def get_payroll(
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
-    """Табель за произвольный период с расчётом зарплаты по каждому сотруднику."""
+    """Табель за произвольный период с почасовым расчётом зарплаты по каждому сотруднику."""
     dates = _validate_period(date_from, date_to)
     faceid, names = await _load_faceid_days(attendance_db, date_from, date_to)
 
@@ -272,21 +289,25 @@ async def get_payroll(
         adjustment = adjustments.get(employee_id)
         profile = profiles.get(employee_id)
         days = _build_days(employee_id, dates, faceid, overrides)
-        worked = sum(1 for d in days.values() if d.counted)
+        worked_days = sum(1 for d in days.values() if d.counted)
+        worked_minutes = sum(d.minutes or 0 for d in days.values())
         rate_value = Decimal(rate.rate_per_shift) if rate else Decimal(0)
         bonus = Decimal(adjustment.bonus) if adjustment else Decimal(0)
         fine = Decimal(adjustment.fine) if adjustment else Decimal(0)
         posuda = Decimal(adjustment.posuda) if adjustment else Decimal(0)
-        gross = rate_value * worked + bonus
+        pay = (rate_value * worked_minutes / 60).quantize(MONEY_STEP)
+        gross = pay + bonus
         employees.append(
             PayrollEmployeeOut(
                 employee_id=employee_id,
                 name=display_name(employee_id),
                 position=profile.position if profile else None,
-                rate_per_shift=float(rate_value),
+                rate_per_hour=float(rate_value),
                 currency=rate.currency if rate else "UZS",
                 days=days,
-                worked_days=worked,
+                worked_days=worked_days,
+                worked_minutes=worked_minutes,
+                hours=round(worked_minutes / 60, 2),
                 bonus=float(bonus),
                 fine=float(fine),
                 posuda=float(posuda),

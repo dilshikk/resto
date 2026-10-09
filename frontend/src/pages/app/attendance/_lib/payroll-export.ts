@@ -4,8 +4,8 @@ import { shortDate } from "../utils.ts";
 
 type Cell = string | number;
 
-const FIXED_LEFT = 4; // №, Isim, Lavozim, Kunlik
-const TAIL_HEADERS = ["Kun", "Mukofoti", "Chiqqan maoshi", "Shtraf", "Posuda", "Chiqqan maoshi", "Imzo"];
+const FIXED_LEFT = 4; // №, Isim, Lavozim, Soatlik (ставка за час)
+const TAIL_HEADERS = ["Soat", "Mukofoti", "Chiqqan maoshi", "Shtraf", "Posuda", "Chiqqan maoshi", "Imzo"];
 
 /** Выгрузка табеля в Excel в том же виде, что и бумажная ведомость: на сотрудника две строки (приход / уход). */
 export function exportPayrollExcel(payroll: Payroll): void {
@@ -14,7 +14,7 @@ export function exportPayrollExcel(payroll: Payroll): void {
     "№",
     "Isim",
     "Lavozim",
-    "Kunlik",
+    "Soatlik",
     ...dates.map(shortDate),
     ...TAIL_HEADERS,
   ];
@@ -28,9 +28,9 @@ export function exportPayrollExcel(payroll: Payroll): void {
       index + 1,
       emp.name,
       emp.position ?? "",
-      emp.rate_per_shift,
+      emp.rate_per_hour,
       ...dates.map((date) => emp.days[date]?.arrival ?? "-"),
-      emp.worked_days,
+      emp.hours,
       emp.bonus,
       emp.gross,
       emp.fine,
@@ -65,7 +65,7 @@ export function exportPayrollExcel(payroll: Payroll): void {
     "",
     "",
     ...dates.map(() => ""),
-    sum((e) => e.worked_days),
+    Math.round(sum((e) => e.hours) * 100) / 100,
     sum((e) => e.bonus),
     sum((e) => e.gross),
     sum((e) => e.fine),
@@ -82,7 +82,7 @@ export function exportPayrollExcel(payroll: Payroll): void {
     { wch: 14 },
     { wch: 10 },
     ...dates.map(() => ({ wch: 6 })),
-    { wch: 5 },
+    { wch: 7 },
     { wch: 11 },
     { wch: 15 },
     { wch: 10 },
