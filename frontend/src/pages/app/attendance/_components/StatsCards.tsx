@@ -1,4 +1,4 @@
-import type { EmployeeDay } from "../utils.ts";
+import type { EmployeeDay } from "../_lib/utils.ts";
 import { Users, Clock, AlertTriangle, UserX } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 

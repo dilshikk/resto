@@ -12,7 +12,7 @@ import {
   formatMinutes,
   type EmployeeDay,
   type ReportPeriod,
-} from "../utils.ts";
+} from "../_lib/utils.ts";
 import FiltersBar from "./FiltersBar.tsx";
 import StatsCards from "./StatsCards.tsx";
 import AttendanceTable from "./AttendanceTable.tsx";

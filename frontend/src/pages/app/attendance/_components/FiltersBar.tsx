@@ -1,6 +1,6 @@
 import { Calendar, RefreshCw } from "lucide-react";
 import type { AttendanceEmployee } from "@/api/attendance.ts";
-import type { ReportPeriod } from "../utils.ts";
+import type { ReportPeriod } from "../_lib/utils.ts";
 import { cn } from "@/lib/utils.ts";
 
 type Props = {
