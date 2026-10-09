@@ -137,6 +137,14 @@ export default function PayrollTable({ payroll, onEditDay, onAdjust, onRate, onP
   );
 }
 
+// Подсказка при наведении: все отрезки смены и пометка о незакрытой смене
+function dayTitle(day: PayrollDay | undefined): string | undefined {
+  if (!day) return undefined;
+  const parts = [...day.segments];
+  if (day.open) parts.push("нет ухода после последнего прихода");
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
 function DayCell({
   day,
   kind,
@@ -151,11 +159,12 @@ function DayCell({
     <td className="border p-0 text-center text-xs tabular-nums">
       <button
         type="button"
+        title={dayTitle(day)}
         onClick={onClick}
         className={cn(
           "block h-full w-full cursor-pointer px-1.5 py-1 transition-colors hover:bg-muted",
           !value && "text-muted-foreground",
-          value && day && !day.counted && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
+          value && day && (!day.counted || day.open) && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
           value && day?.manual && "font-semibold text-blue-600",
         )}
       >
