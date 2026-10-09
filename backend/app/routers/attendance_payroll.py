@@ -4,10 +4,14 @@
 Правила:
 - Смена считается с 06:00 до 05:59 следующего дня. Ночной уход (01:00-03:00)
   относится к дню прихода.
-- Смена засчитывается только если есть и приход, и уход
-  (из FaceID или введённые вручную) и уход позже прихода.
-- Ручные правки хранятся в основной БД и имеют приоритет над FaceID.
-- Оплата почасовая: часы считаются точно по минутам от прихода до ухода.
+- За смену может быть несколько отрезков (пришёл - ушёл на учёбу - вернулся - ушёл).
+  Часы = сумма закрытых отрезков вход -> выход. Время вне работы не оплачивается.
+- Повторные сканы подряд (два входа или два выхода) считаются одним событием.
+- Если после последнего входа нет выхода, этот отрезок не считается (смена открыта).
+- Ручные правки хранятся в основной БД и имеют приоритет над FaceID:
+  заданы и приход, и уход - вся смена одним отрезком; задан только один -
+  он заменяет начало первого отрезка или закрывает последний открытый.
+- Оплата почасовая: часы считаются точно по минутам.
   Ставка за час хранится в attendance_rates.rate_per_shift (имя колонки историческое).
 - Начислено = часы * ставка за час + премия; К выдаче = начислено - штраф - посуда.
 """
@@ -42,6 +46,7 @@ MONEY_STEP = Decimal("0.01")
 # ── Схемы ────────────────────────────────────────────────────────────────────
 
 class PayrollDayOut(BaseModel):
+    # Первый приход и последний закрытый уход за смену
     arrival: str | None
     departure: str | None
     faceid_arrival: str | None
@@ -50,6 +55,10 @@ class PayrollDayOut(BaseModel):
     counted: bool
     # Отработано минут за смену (None, если смена не засчитана)
     minutes: int | None
+    # После последнего входа нет выхода
+    open: bool
+    # Отрезки работы "06:58-12:25", если их больше одного видно перерыв
+    segments: list[str]
 
 
 class PayrollEmployeeOut(BaseModel):
@@ -104,8 +113,15 @@ class PositionUpsert(BaseModel):
 
 @dataclass
 class _RawDay:
-    ins: list[str] = field(default_factory=list)
-    outs: list[str] = field(default_factory=list)
+    # События смены в хронологическом порядке: ("in" | "out", "HH:MM")
+    events: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _Session:
+    # Закрытые отрезки [начало, конец] и начало незакрытого отрезка
+    segments: list[list[str]] = field(default_factory=list)
+    open_start: str | None = None
 
 
 def _to_minutes(hhmm: str) -> int:
@@ -123,11 +139,9 @@ def _shift_date(day: date, hhmm: str) -> date:
     return day - timedelta(days=1) if _to_minutes(hhmm) < SHIFT_CUTOFF_MINUTES else day
 
 
-def _day_minutes(arrival: str | None, departure: str | None) -> int | None:
-    """Длительность смены в минутах; None, если нет прихода/ухода или уход не позже прихода."""
-    if not arrival or not departure:
-        return None
-    diff = _shift_minutes(departure) - _shift_minutes(arrival)
+def _day_minutes(start: str, end: str) -> int | None:
+    """Длительность отрезка в минутах; None, если конец не позже начала."""
+    diff = _shift_minutes(end) - _shift_minutes(start)
     return diff if diff > 0 else None
 
 
@@ -151,12 +165,62 @@ def _to_hhmm(value: object) -> str | None:
     return f"{int(parts[0]):02d}:{int(parts[1][:2]):02d}"
 
 
-def _faceid_times(raw: _RawDay) -> tuple[str | None, str | None]:
-    """Первый приход и последний уход, который случился после прихода."""
-    arrival = min(raw.ins, key=_shift_minutes, default=None)
-    outs = [o for o in raw.outs if arrival is None or _shift_minutes(o) > _shift_minutes(arrival)]
-    departure = max(outs, key=_shift_minutes, default=None)
-    return arrival, departure
+def _build_session(events: list[tuple[str, str]]) -> _Session:
+    """Собирает отрезки работы из событий FaceID.
+
+    Подряд идущие входы - один вход (берём первый), подряд идущие выходы - один
+    выход (берём последний). Выход в ту же минуту или раньше входа считается
+    дублем скана и игнорируется.
+    """
+    session = _Session()
+    prev_kind: str | None = None
+    for kind, hhmm in events:
+        if kind == "in":
+            if session.open_start is None:
+                session.open_start = hhmm
+        elif session.open_start is not None:
+            if _shift_minutes(hhmm) > _shift_minutes(session.open_start):
+                session.segments.append([session.open_start, hhmm])
+                session.open_start = None
+        elif (
+            prev_kind == "out"
+            and session.segments
+            and _shift_minutes(hhmm) > _shift_minutes(session.segments[-1][1])
+        ):
+            session.segments[-1][1] = hhmm
+        prev_kind = kind
+    return session
+
+
+def _apply_override(session: _Session, arrival: str | None, departure: str | None) -> _Session:
+    """Накладывает ручной приход/уход на отрезки из FaceID."""
+    if arrival and departure:
+        return _Session(segments=[[arrival, departure]])
+    segments = [seg[:] for seg in session.segments]
+    open_start = session.open_start
+    if arrival:
+        if segments:
+            segments[0][0] = arrival
+        else:
+            open_start = arrival
+    if departure:
+        if open_start is not None:
+            segments.append([open_start, departure])
+            open_start = None
+        elif segments:
+            segments[-1][1] = departure
+    return _Session(segments=segments, open_start=open_start)
+
+
+def _session_minutes(session: _Session) -> int:
+    return sum(_day_minutes(start, end) or 0 for start, end in session.segments)
+
+
+def _session_bounds(session: _Session) -> tuple[str | None, str | None]:
+    """Первый приход и последний закрытый уход."""
+    if session.segments:
+        return session.segments[0][0], session.segments[-1][1]
+    return session.open_start, None
 
 
 def _validate_period(date_from: date, date_to: date) -> list[date]:
@@ -197,10 +261,8 @@ async def _load_faceid_days(
         employee_id = str(row["employee_id"])
         raw = days.setdefault((employee_id, shift_day), _RawDay())
         direction = (row["direction"] or "").lower()
-        if direction == "in":
-            raw.ins.append(hhmm)
-        elif direction == "out":
-            raw.outs.append(hhmm)
+        if direction in ("in", "out"):
+            raw.events.append((direction, hhmm))
         name = " ".join(p for p in (row["first_name"], row["last_name"]) if p)
         if name:
             names[employee_id] = name
@@ -219,18 +281,26 @@ def _build_days(
         override = overrides.get((employee_id, day))
         if raw is None and override is None:
             continue
-        face_arrival, face_departure = _faceid_times(raw) if raw else (None, None)
-        arrival = (override.arrival if override else None) or face_arrival
-        departure = (override.departure if override else None) or face_departure
-        minutes = _day_minutes(arrival, departure)
+        face_session = _build_session(raw.events) if raw else _Session()
+        manual_arrival = override.arrival if override else None
+        manual_departure = override.departure if override else None
+        manual = bool(manual_arrival or manual_departure)
+        session = (
+            _apply_override(face_session, manual_arrival, manual_departure) if manual else face_session
+        )
+        minutes = _session_minutes(session)
+        arrival, departure = _session_bounds(session)
+        face_arrival, face_departure = _session_bounds(face_session)
         result[day.isoformat()] = PayrollDayOut(
             arrival=arrival,
             departure=departure,
             faceid_arrival=face_arrival,
             faceid_departure=face_departure,
-            manual=bool(override and (override.arrival or override.departure)),
-            counted=minutes is not None,
-            minutes=minutes,
+            manual=manual,
+            counted=minutes > 0,
+            minutes=minutes or None,
+            open=session.open_start is not None,
+            segments=[f"{start}-{end}" for start, end in session.segments],
         )
     return result
 

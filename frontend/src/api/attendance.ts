@@ -71,17 +71,22 @@ export async function upsertAttendanceRate(
 // ── Табель и расчёт зарплаты ─────────────────────────────────────────────────
 
 export type PayrollDay = {
-  /** Итоговое время прихода (ручное, если есть, иначе FaceID) */
+  /** Первый приход за смену (ручной, если есть, иначе FaceID) */
   arrival: string | null;
+  /** Последний закрытый уход за смену */
   departure: string | null;
   faceid_arrival: string | null;
   faceid_departure: string | null;
   /** Время прихода/ухода было изменено вручную */
   manual: boolean;
-  /** Смена засчитана: есть и приход, и уход, уход позже прихода */
+  /** Смена засчитана: есть хотя бы один закрытый отрезок вход -> выход */
   counted: boolean;
-  /** Отработано минут за смену */
+  /** Отработано минут за смену (сумма отрезков) */
   minutes: number | null;
+  /** После последнего входа нет выхода */
+  open: boolean;
+  /** Отрезки работы за смену, например "06:58-12:25" */
+  segments: string[];
 };
 
 export type PayrollEmployee = {
