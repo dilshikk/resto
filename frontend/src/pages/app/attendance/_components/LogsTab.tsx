@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import { fetchAttendanceLogs, fetchAttendanceEmployees } from "@/api/attendance.ts";
 import {
   groupLogsByEmployeeDay,
+  sortLatestFirst,
   todayStr,
   weekAgoStr,
   monthStartStr,
@@ -17,7 +18,7 @@ import FiltersBar from "./FiltersBar.tsx";
 import StatsCards from "./StatsCards.tsx";
 import AttendanceTable from "./AttendanceTable.tsx";
 
-// Журнал событий FaceID по дням. Зарплата считается на вкладке «Табель и зарплата».
+// Журнал событий FaceID по дням, самые свежие проходы сверху. Зарплата считается на вкладке «Табель и зарплата».
 export default function LogsTab() {
   const [period, setPeriod] = useState<ReportPeriod>("day");
   const [dateFrom, setDateFrom] = useState(todayStr());
@@ -54,7 +55,7 @@ export default function LogsTab() {
         date_to: dateTo,
         employee_id: employeeId || undefined,
       });
-      setRows(groupLogsByEmployeeDay(logs));
+      setRows(sortLatestFirst(groupLogsByEmployeeDay(logs)));
     } catch {
       toast.error("Не удалось загрузить данные посещаемости");
     } finally {

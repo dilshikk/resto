@@ -1,17 +1,18 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Calendar, Download, RefreshCw } from "lucide-react";
 import { fetchPayroll, type AdjustmentField, type PayrollEmployee } from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   formatNumber,
-  halfMonthRange,
+  monthPartRange,
   monthRange,
   periodLength,
   type DateRange,
 } from "../_lib/utils.ts";
 import { exportPayrollExcel } from "../_lib/payroll-export.ts";
 import { formatHours } from "../_lib/format-hours.ts";
+import { sortEmployees, usePayrollSort } from "../_lib/payroll-sort.ts";
 import { usePayrollMutations } from "../_hooks/use-payroll-mutations.ts";
 import PayrollTable from "./PayrollTable.tsx";
 import PunchDialog from "./PunchDialog.tsx";
@@ -21,8 +22,9 @@ const MAX_DAYS = 62;
 const PRESETS: { label: string; range: () => DateRange }[] = [
   { label: "Этот месяц", range: () => monthRange(0) },
   { label: "Прошлый месяц", range: () => monthRange(-1) },
-  { label: "1–15", range: () => halfMonthRange(1) },
-  { label: "16–конец", range: () => halfMonthRange(2) },
+  { label: "1–10", range: () => monthPartRange(1) },
+  { label: "11–20", range: () => monthPartRange(2) },
+  { label: "21–30", range: () => monthPartRange(3) },
 ];
 
 type Editing = { employeeId: string; date: string };
@@ -33,6 +35,7 @@ export default function PayrollTab() {
   const [dateTo, setDateTo] = useState(initial.to);
   const [editing, setEditing] = useState<Editing | null>(null);
   const { punch, adjustment, position, rate } = usePayrollMutations();
+  const { sort, toggle } = usePayrollSort();
 
   const length = dateFrom && dateTo ? periodLength(dateFrom, dateTo) : 0;
   const validPeriod = length >= 1 && length <= MAX_DAYS;
@@ -43,7 +46,8 @@ export default function PayrollTab() {
     enabled: validPeriod,
   });
 
-  const editingEmployee = data?.employees.find((e) => e.employee_id === editing?.employeeId);
+  const employees = useMemo(() => sortEmployees(data?.employees ?? [], sort), [data, sort]);
+  const editingEmployee = employees.find((e) => e.employee_id === editing?.employeeId);
 
   const handleAdjust = (employeeId: string, field: AdjustmentField, value: number) =>
     adjustment.mutate({
@@ -74,30 +78,37 @@ export default function PayrollTab() {
     );
   };
 
-  const totalNet = data?.employees.reduce((acc, e) => acc + e.net, 0) ?? 0;
-  const totalMinutes = data?.employees.reduce((acc, e) => acc + e.worked_minutes, 0) ?? 0;
-  const withoutRate =
-    data?.employees.filter((e) => e.rate_per_hour <= 0 && e.worked_minutes > 0).length ?? 0;
+  const totalNet = employees.reduce((acc, e) => acc + e.net, 0);
+  const totalMinutes = employees.reduce((acc, e) => acc + e.worked_minutes, 0);
+  const withoutRate = employees.filter((e) => e.rate_per_hour <= 0 && e.worked_minutes > 0).length;
 
   return (
     <div className="space-y-4">
       {/* Период */}
       <div className="flex flex-wrap items-end gap-3">
-        <div className="flex gap-1 rounded-lg bg-secondary p-1">
-          {PRESETS.map((preset) => (
-            <button
-              key={preset.label}
-              type="button"
-              onClick={() => {
-                const range = preset.range();
-                setDateFrom(range.from);
-                setDateTo(range.to);
-              }}
-              className="cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {preset.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap gap-1 rounded-lg bg-secondary p-1">
+          {PRESETS.map((preset) => {
+            const range = preset.range();
+            const active = range.from === dateFrom && range.to === dateTo;
+            return (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  setDateFrom(range.from);
+                  setDateTo(range.to);
+                }}
+                className={cn(
+                  "cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className="flex items-center gap-2">
@@ -129,8 +140,8 @@ export default function PayrollTab() {
 
         <button
           type="button"
-          onClick={() => data && exportPayrollExcel(data)}
-          disabled={!data || data.employees.length === 0}
+          onClick={() => data && exportPayrollExcel(data, employees)}
+          disabled={employees.length === 0}
           className="ml-auto flex h-9 cursor-pointer items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Download className="h-4 w-4" />
@@ -145,9 +156,9 @@ export default function PayrollTab() {
       )}
 
       {/* Сводка */}
-      {data && data.employees.length > 0 && (
+      {employees.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-          <span className="text-muted-foreground">Сотрудников: {data.employees.length}</span>
+          <span className="text-muted-foreground">Сотрудников: {employees.length}</span>
           <span className="text-muted-foreground">Часов всего: {formatHours(totalMinutes)}</span>
           <span>
             <span className="text-muted-foreground">К выдаче всего: </span>
@@ -155,7 +166,7 @@ export default function PayrollTab() {
           </span>
           {withoutRate > 0 && (
             <span className="text-amber-600">
-              У {withoutRate} сотр. не задана ставка - введите её в колонке «Soatlik»
+              У {withoutRate} сотр. не задана ставка - введите её в колонке «Ставка/час»
             </span>
           )}
         </div>
@@ -173,16 +184,19 @@ export default function PayrollTab() {
         </div>
       )}
 
-      {data && data.employees.length === 0 && (
+      {data && employees.length === 0 && (
         <div className="rounded-xl border py-16 text-center text-muted-foreground">
           Нет данных за выбранный период
         </div>
       )}
 
-      {data && data.employees.length > 0 && (
+      {data && employees.length > 0 && (
         <>
           <PayrollTable
             payroll={data}
+            employees={employees}
+            sort={sort}
+            onSort={toggle}
             onEditDay={(employeeId, date) => setEditing({ employeeId, date })}
             onAdjust={handleAdjust}
             onRate={handleRate}
@@ -194,7 +208,8 @@ export default function PayrollTab() {
             Оплата почасовая: часы считаются по минутам от прихода до ухода. Ставку за час, премию,
             штраф и посуду можно менять прямо в таблице, сохраняется при выходе из поля. Нажмите на
             время, чтобы указать приход и уход вручную. Синим выделено ручное время, жёлтым - смена
-            без прихода или ухода (не считается).
+            без прихода или ухода (не считается). Нажмите на заголовок «Имя», «Должность» или
+            «Ставка/час», чтобы отсортировать - выбор запоминается.
           </p>
         </>
       )}

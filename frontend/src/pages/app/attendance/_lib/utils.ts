@@ -129,6 +129,15 @@ export function groupLogsByEmployeeDay(logs: AccessLog[]): EmployeeDay[] {
   );
 }
 
+/** Самые свежие проходы сверху: по дате смены, затем по времени последнего события. */
+export function sortLatestFirst(rows: EmployeeDay[]): EmployeeDay[] {
+  const lastMinutes = (r: EmployeeDay) => {
+    const time = r.logs[r.logs.length - 1]?.access_time;
+    return time ? toShiftMinutes(time) : -1;
+  };
+  return [...rows].sort((a, b) => b.date.localeCompare(a.date) || lastMinutes(b) - lastMinutes(a));
+}
+
 export function formatMinutes(minutes: number): string {
   if (minutes < 0) return `—`;
   const h = Math.floor(minutes / 60);
@@ -180,11 +189,13 @@ export function monthRange(offset = 0): DateRange {
   };
 }
 
-/** Половина текущего месяца: 1-15 или 16-конец. */
-export function halfMonthRange(half: 1 | 2): DateRange {
+/** Декада текущего месяца: 1-10, 11-20 или 21-конец месяца. */
+export function monthPartRange(part: 1 | 2 | 3): DateRange {
   const full = monthRange(0);
   const prefix = full.from.slice(0, 8);
-  return half === 1 ? { from: `${prefix}01`, to: `${prefix}15` } : { from: `${prefix}16`, to: full.to };
+  if (part === 1) return { from: `${prefix}01`, to: `${prefix}10` };
+  if (part === 2) return { from: `${prefix}11`, to: `${prefix}20` };
+  return { from: `${prefix}21`, to: full.to };
 }
 
 /** Число дней в периоде включительно. */

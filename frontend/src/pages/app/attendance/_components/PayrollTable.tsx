@@ -1,11 +1,17 @@
 import { useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { AdjustmentField, Payroll, PayrollDay, PayrollEmployee } from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
 import { formatNumber, shortDate } from "../_lib/utils.ts";
 import { formatHours } from "../_lib/format-hours.ts";
+import type { PayrollSort, SortKey } from "../_lib/payroll-sort.ts";
 
 type Props = {
   payroll: Payroll;
+  /** Сотрудники в нужном порядке (уже отсортированные) */
+  employees: PayrollEmployee[];
+  sort: PayrollSort;
+  onSort: (key: SortKey) => void;
   onEditDay: (employeeId: string, date: string) => void;
   onAdjust: (employeeId: string, field: AdjustmentField, value: number) => void;
   onRate: (employee: PayrollEmployee, value: number) => void;
@@ -17,8 +23,17 @@ const HEAD = "border bg-muted px-2 py-2 text-center text-xs font-semibold text-m
 const STICKY_NUM = "sticky left-0 z-10 w-10 min-w-10 bg-background";
 const STICKY_NAME = "sticky left-10 z-10 min-w-44 bg-background";
 
-export default function PayrollTable({ payroll, onEditDay, onAdjust, onRate, onPosition }: Props) {
-  const { dates, employees } = payroll;
+export default function PayrollTable({
+  payroll,
+  employees,
+  sort,
+  onSort,
+  onEditDay,
+  onAdjust,
+  onRate,
+  onPosition,
+}: Props) {
+  const { dates } = payroll;
   const total = (pick: (e: PayrollEmployee) => number) =>
     employees.reduce((acc, e) => acc + pick(e), 0);
 
@@ -28,21 +43,27 @@ export default function PayrollTable({ payroll, onEditDay, onAdjust, onRate, onP
         <thead>
           <tr>
             <th className={cn(HEAD, STICKY_NUM, "bg-muted")}>№</th>
-            <th className={cn(HEAD, STICKY_NAME, "bg-muted text-left")}>Isim</th>
-            <th className={HEAD}>Lavozim</th>
-            <th className={HEAD}>Soatlik</th>
+            <th className={cn(HEAD, STICKY_NAME, "bg-muted text-left")}>
+              <SortButton label="Имя" sortKey="name" sort={sort} onSort={onSort} />
+            </th>
+            <th className={HEAD}>
+              <SortButton label="Должность" sortKey="position" sort={sort} onSort={onSort} />
+            </th>
+            <th className={HEAD}>
+              <SortButton label="Ставка/час" sortKey="rate" sort={sort} onSort={onSort} />
+            </th>
             {dates.map((date) => (
               <th key={date} className={cn(HEAD, "min-w-14")}>
                 {shortDate(date)}
               </th>
             ))}
-            <th className={HEAD}>Soat</th>
-            <th className={HEAD}>Mukofoti</th>
-            <th className={HEAD}>Chiqqan maoshi</th>
-            <th className={HEAD}>Shtraf</th>
-            <th className={HEAD}>Posuda</th>
-            <th className={HEAD}>Chiqqan maoshi</th>
-            <th className={HEAD}>Imzo</th>
+            <th className={HEAD}>Часы</th>
+            <th className={HEAD}>Премия</th>
+            <th className={HEAD}>Начислено</th>
+            <th className={HEAD}>Штраф</th>
+            <th className={HEAD}>Посуда</th>
+            <th className={HEAD}>К выдаче</th>
+            <th className={HEAD}>Подпись</th>
           </tr>
         </thead>
 
@@ -134,6 +155,35 @@ export default function PayrollTable({ payroll, onEditDay, onAdjust, onRate, onP
         </tfoot>
       </table>
     </div>
+  );
+}
+
+function SortButton({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: PayrollSort;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = sort?.key === sortKey;
+  const Icon = !active ? ArrowUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      title="Сортировать"
+      className={cn(
+        "inline-flex cursor-pointer items-center gap-1 transition-colors hover:text-foreground",
+        active && "text-foreground",
+      )}
+    >
+      {label}
+      <Icon className={cn("h-3.5 w-3.5", !active && "opacity-50")} />
+    </button>
   );
 }
 

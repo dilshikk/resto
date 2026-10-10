@@ -1,20 +1,20 @@
 import * as XLSX from "xlsx";
-import type { Payroll } from "@/api/attendance.ts";
+import type { Payroll, PayrollEmployee } from "@/api/attendance.ts";
 import { shortDate } from "./utils.ts";
 
 type Cell = string | number;
 
-const FIXED_LEFT = 4; // №, Isim, Lavozim, Soatlik (ставка за час)
-const TAIL_HEADERS = ["Soat", "Mukofoti", "Chiqqan maoshi", "Shtraf", "Posuda", "Chiqqan maoshi", "Imzo"];
+const FIXED_LEFT = 4; // №, Имя, Должность, Ставка/час
+const TAIL_HEADERS = ["Часы", "Премия", "Начислено", "Штраф", "Посуда", "К выдаче", "Подпись"];
 
 /** Выгрузка табеля в Excel в том же виде, что и бумажная ведомость: на сотрудника две строки (приход / уход). */
-export function exportPayrollExcel(payroll: Payroll): void {
-  const { dates, employees } = payroll;
+export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[] = payroll.employees): void {
+  const { dates } = payroll;
   const header: Cell[] = [
     "№",
-    "Isim",
-    "Lavozim",
-    "Soatlik",
+    "Имя",
+    "Должность",
+    "Ставка/час",
     ...dates.map(shortDate),
     ...TAIL_HEADERS,
   ];
@@ -56,7 +56,7 @@ export function exportPayrollExcel(payroll: Payroll): void {
     }
   });
 
-  const sum = (pick: (e: Payroll["employees"][number]) => number) =>
+  const sum = (pick: (e: PayrollEmployee) => number) =>
     employees.reduce((acc, e) => acc + pick(e), 0);
 
   rows.push([
@@ -80,7 +80,7 @@ export function exportPayrollExcel(payroll: Payroll): void {
     { wch: 4 },
     { wch: 24 },
     { wch: 14 },
-    { wch: 10 },
+    { wch: 11 },
     ...dates.map(() => ({ wch: 6 })),
     { wch: 7 },
     { wch: 11 },
@@ -92,6 +92,6 @@ export function exportPayrollExcel(payroll: Payroll): void {
   ];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Tabel");
+  XLSX.utils.book_append_sheet(wb, ws, "Табель");
   XLSX.writeFile(wb, `tabel_${payroll.date_from}_${payroll.date_to}.xlsx`);
 }
