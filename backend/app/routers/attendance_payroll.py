@@ -15,6 +15,8 @@
   или уход без прихода - штраф MISSING_PUNCH_FINE за каждую такую смену.
   Ручная правка исправляет часы, но штраф НЕ отменяет (он считается по FaceID).
   Смены за сегодня и вчера не штрафуются - сотрудник может быть ещё на работе.
+- Посуда: POSUDA_PER_SHIFT за каждую засчитанную смену удерживается автоматически.
+  Ручная сумма посуды за период (если задана) добавляется сверху.
 - Оплата почасовая, но за смену оплачивается не более 10 часов.
   Всё, что больше 10 часов, - переработка: она считается и показывается
   отдельно, но в зарплату НЕ засчитывается.
@@ -22,7 +24,7 @@
   поэтому изменение ставки не пересчитывает прошлые периоды. Если истории нет,
   используется текущая ставка из attendance_rates.rate_per_shift (имя колонки историческое).
 - Начислено = сумма по сменам (оплачиваемые часы * ставка дня) + премия;
-  К выдаче = начислено - штраф - штраф за отметки - посуда.
+  К выдаче = начислено - штраф - штраф за отметки - посуда (авто + ручная).
 - Имя сотрудника: ПРИОРИТЕТ у display_name из основной БД (attendance_rates).
   FaceID-имя используется только если display_name не задан. Это гарантирует,
   что смена имени в FaceID не ломает табель и все данные остаются привязаны к ID.
@@ -56,6 +58,8 @@ SHIFT_CUTOFF_MINUTES = 6 * 60
 MAX_PAID_MINUTES_PER_SHIFT = 10 * 60
 # Штраф за смену, где в FaceID нет прихода или ухода
 MISSING_PUNCH_FINE = Decimal(30000)
+# Удержание за посуду за каждую засчитанную смену
+POSUDA_PER_SHIFT = Decimal(5000)
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 MONEY_STEP = Decimal("0.01")
 
@@ -115,7 +119,12 @@ class PayrollEmployeeOut(BaseModel):
     # Смен без прихода или ухода в FaceID и сумма штрафа за них
     missing_punch_count: int = 0
     missing_punch_fine: float = 0
+    # Ручная посуда за период (вводит менеджер)
     posuda: float
+    # Автоматическая посуда: POSUDA_PER_SHIFT * засчитанные смены
+    posuda_auto: float = 0
+    # Всего посуды к удержанию
+    posuda_total: float = 0
     gross: float
     net: float
 
@@ -126,6 +135,7 @@ class PayrollOut(BaseModel):
     dates: list[str]
     max_paid_minutes_per_shift: int
     missing_punch_fine_amount: float
+    posuda_per_shift: float
     employees: list[PayrollEmployeeOut]
 
 
@@ -498,6 +508,8 @@ async def get_payroll(
         bonus = Decimal(adjustment.bonus) if adjustment else Decimal(0)
         fine = Decimal(adjustment.fine) if adjustment else Decimal(0)
         posuda = Decimal(adjustment.posuda) if adjustment else Decimal(0)
+        posuda_auto = POSUDA_PER_SHIFT * worked_days
+        posuda_total = posuda + posuda_auto
         missing_punch_count = sum(1 for d in days.values() if d.missing_punch)
         missing_punch_fine = MISSING_PUNCH_FINE * missing_punch_count
         # Каждая смена оплачивается по ставке своего дня, не более 10 часов
@@ -528,8 +540,10 @@ async def get_payroll(
                 missing_punch_count=missing_punch_count,
                 missing_punch_fine=float(missing_punch_fine),
                 posuda=float(posuda),
+                posuda_auto=float(posuda_auto),
+                posuda_total=float(posuda_total),
                 gross=float(gross),
-                net=float(gross - fine - missing_punch_fine - posuda),
+                net=float(gross - fine - missing_punch_fine - posuda_total),
             )
         )
 
@@ -539,6 +553,7 @@ async def get_payroll(
         dates=[d.isoformat() for d in dates],
         max_paid_minutes_per_shift=MAX_PAID_MINUTES_PER_SHIFT,
         missing_punch_fine_amount=float(MISSING_PUNCH_FINE),
+        posuda_per_shift=float(POSUDA_PER_SHIFT),
         employees=employees,
     )
 
