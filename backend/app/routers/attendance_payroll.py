@@ -14,10 +14,13 @@
 - Оплата почасовая, но за смену оплачивается не более 10 часов.
   Всё, что больше 10 часов, - переработка: она считается и показывается
   отдельно, но в зарплату НЕ засчитывается.
-  Ставка за час хранится в attendance_rates.rate_per_shift (имя колонки историческое).
-- Начислено = оплачиваемые часы * ставка за час + премия;
+- Ставка за час берётся из истории ставок (attendance_rate_history) на день смены,
+  поэтому изменение ставки не пересчитывает прошлые периоды. Если истории нет,
+  используется текущая ставка из attendance_rates.rate_per_shift (имя колонки историческое).
+- Начислено = сумма по сменам (оплачиваемые часы * ставка дня) + премия;
   К выдаче = начислено - штраф - посуда.
 """
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -35,7 +38,7 @@ from app.models.attendance_payroll import (
     AttendancePayrollAdjustment,
     AttendancePunchOverride,
 )
-from app.models.attendance_rate import AttendanceRate
+from app.models.attendance_rate import AttendanceRate, AttendanceRateHistory
 from app.models.employee import Employee
 
 router = APIRouter(prefix="/attendance-payroll", tags=["attendance"])
@@ -68,13 +71,18 @@ class PayrollDayOut(BaseModel):
     open: bool
     # Отрезки работы "06:58-12:25", если их больше одного видно перерыв
     segments: list[str]
+    # Ставка за час, действовавшая в день смены
+    rate: float = 0
 
 
 class PayrollEmployeeOut(BaseModel):
     employee_id: str
     name: str
     position: str | None
+    # Ставка за час на конец периода
     rate_per_hour: float
+    # В периоде действовало несколько разных ставок
+    rate_changed: bool = False
     currency: str
     days: dict[str, PayrollDayOut]
     worked_days: int
@@ -139,6 +147,21 @@ class _Session:
     # Закрытые отрезки [начало, конец] и начало незакрытого отрезка
     segments: list[list[str]] = field(default_factory=list)
     open_start: str | None = None
+
+
+@dataclass
+class _RateTimeline:
+    """Ставки сотрудника по датам начала действия (по возрастанию)."""
+    starts: list[date] = field(default_factory=list)
+    rates: list[Decimal] = field(default_factory=list)
+    fallback: Decimal = Decimal(0)
+
+    def on(self, day: date) -> Decimal:
+        if not self.starts:
+            return self.fallback
+        idx = bisect_right(self.starts, day) - 1
+        # Смена раньше первой записи истории - берём самую раннюю ставку
+        return self.rates[max(idx, 0)]
 
 
 def _to_minutes(hhmm: str) -> int:
@@ -292,11 +315,33 @@ async def _load_faceid_days(
     return days, names
 
 
+async def _load_rate_timelines(
+    main_db: AsyncSession, rates: dict[str, AttendanceRate]
+) -> dict[str, _RateTimeline]:
+    """История ставок по сотрудникам; без истории - текущая ставка как запасной вариант."""
+    timelines = {
+        eid: _RateTimeline(fallback=Decimal(rate.rate_per_shift)) for eid, rate in rates.items()
+    }
+    rows = (
+        await main_db.execute(
+            select(AttendanceRateHistory).order_by(
+                AttendanceRateHistory.faceid_employee_id, AttendanceRateHistory.effective_from
+            )
+        )
+    ).scalars().all()
+    for row in rows:
+        timeline = timelines.setdefault(row.faceid_employee_id, _RateTimeline())
+        timeline.starts.append(row.effective_from)
+        timeline.rates.append(Decimal(row.rate))
+    return timelines
+
+
 def _build_days(
     employee_id: str,
     dates: list[date],
     faceid: dict[tuple[str, date], _RawDay],
     overrides: dict[tuple[str, date], AttendancePunchOverride],
+    timeline: _RateTimeline,
 ) -> dict[str, PayrollDayOut]:
     result: dict[str, PayrollDayOut] = {}
     for day in dates:
@@ -327,6 +372,7 @@ def _build_days(
             overtime_minutes=overtime,
             open=session.open_start is not None,
             segments=[f"{start}-{end}" for start, end in session.segments],
+            rate=float(timeline.on(day)),
         )
     return result
 
@@ -341,7 +387,7 @@ async def get_payroll(
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
-    """Табель за период: оплата по часам, не более 10 часов за смену, переработка отдельно."""
+    """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену."""
     dates = _validate_period(date_from, date_to)
     faceid, names = await _load_faceid_days(attendance_db, date_from, date_to)
 
@@ -366,6 +412,7 @@ async def get_payroll(
     adjustments = {a.faceid_employee_id: a for a in adjustment_rows}
 
     rates = {r.faceid_employee_id: r for r in (await main_db.execute(select(AttendanceRate))).scalars().all()}
+    timelines = await _load_rate_timelines(main_db, rates)
     profiles = {
         p.faceid_employee_id: p
         for p in (await main_db.execute(select(AttendanceEmployeeProfile))).scalars().all()
@@ -382,26 +429,31 @@ async def get_payroll(
     employees: list[PayrollEmployeeOut] = []
     for employee_id in sorted(employee_ids, key=lambda e: display_name(e).lower()):
         rate = rates.get(employee_id)
+        timeline = timelines.get(employee_id, _RateTimeline())
         adjustment = adjustments.get(employee_id)
         profile = profiles.get(employee_id)
-        days = _build_days(employee_id, dates, faceid, overrides)
+        days = _build_days(employee_id, dates, faceid, overrides, timeline)
         worked_days = sum(1 for d in days.values() if d.counted)
         worked_minutes = sum(d.minutes or 0 for d in days.values())
         paid_minutes = sum(d.paid_minutes or 0 for d in days.values())
         overtime_minutes = sum(d.overtime_minutes for d in days.values())
-        rate_value = Decimal(rate.rate_per_shift) if rate else Decimal(0)
         bonus = Decimal(adjustment.bonus) if adjustment else Decimal(0)
         fine = Decimal(adjustment.fine) if adjustment else Decimal(0)
         posuda = Decimal(adjustment.posuda) if adjustment else Decimal(0)
-        # Оплачиваются только минуты в пределах 10 часов за смену
-        pay = (rate_value * paid_minutes / 60).quantize(MONEY_STEP)
+        # Каждая смена оплачивается по ставке своего дня, не более 10 часов
+        pay = sum(
+            (Decimal(str(d.rate)) * (d.paid_minutes or 0) / 60 for d in days.values()),
+            Decimal(0),
+        ).quantize(MONEY_STEP)
         gross = pay + bonus
+        period_rates = {timeline.on(day) for day in dates}
         employees.append(
             PayrollEmployeeOut(
                 employee_id=employee_id,
                 name=display_name(employee_id),
                 position=profile.position if profile else None,
-                rate_per_hour=float(rate_value),
+                rate_per_hour=float(timeline.on(date_to)),
+                rate_changed=len(period_rates) > 1,
                 currency=rate.currency if rate else "UZS",
                 days=days,
                 worked_days=worked_days,
