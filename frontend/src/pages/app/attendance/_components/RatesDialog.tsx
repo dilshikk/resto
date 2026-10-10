@@ -6,7 +6,6 @@ import {
   fetchAttendanceEmployees,
   fetchAttendanceRates,
   upsertAttendanceRate,
-  type AttendanceEmployee,
   type AttendanceRate,
 } from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
