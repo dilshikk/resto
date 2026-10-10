@@ -22,6 +22,8 @@ const CELL = "border px-2 py-1 text-sm";
 const HEAD = "border bg-muted px-2 py-2 text-center text-xs font-semibold text-muted-foreground";
 const STICKY_NUM = "sticky left-0 z-10 w-10 min-w-10 bg-background";
 const STICKY_NAME = "sticky left-10 z-10 min-w-44 bg-background";
+// Переработка: выделяется фиолетовым, в зарплату не идёт
+const OVERTIME = "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
 
 export default function PayrollTable({
   payroll,
@@ -34,126 +36,152 @@ export default function PayrollTable({
   onPosition,
 }: Props) {
   const { dates } = payroll;
+  const maxHours = Math.round((payroll.max_paid_minutes_per_shift ?? 600) / 60);
   const total = (pick: (e: PayrollEmployee) => number) =>
     employees.reduce((acc, e) => acc + pick(e), 0);
 
   return (
-    <div className="overflow-x-auto rounded-xl border">
-      <table className="w-max min-w-full border-collapse text-sm">
-        <thead>
-          <tr>
-            <th className={cn(HEAD, STICKY_NUM, "bg-muted")}>№</th>
-            <th className={cn(HEAD, STICKY_NAME, "bg-muted text-left")}>
-              <SortButton label="Имя" sortKey="name" sort={sort} onSort={onSort} />
-            </th>
-            <th className={HEAD}>
-              <SortButton label="Должность" sortKey="position" sort={sort} onSort={onSort} />
-            </th>
-            <th className={HEAD}>
-              <SortButton label="Ставка/час" sortKey="rate" sort={sort} onSort={onSort} />
-            </th>
-            {dates.map((date) => (
-              <th key={date} className={cn(HEAD, "min-w-14")}>
-                {shortDate(date)}
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        За смену оплачивается не больше {maxHours} ч. Время сверх этого показано как{" "}
+        <span className={cn("rounded px-1 font-medium", OVERTIME)}>переработка</span> и в
+        зарплату не засчитывается.
+      </p>
+      <div className="overflow-x-auto rounded-xl border">
+        <table className="w-max min-w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              <th className={cn(HEAD, STICKY_NUM, "bg-muted")}>№</th>
+              <th className={cn(HEAD, STICKY_NAME, "bg-muted text-left")}>
+                <SortButton label="Имя" sortKey="name" sort={sort} onSort={onSort} />
               </th>
-            ))}
-            <th className={HEAD}>Часы</th>
-            <th className={HEAD}>Премия</th>
-            <th className={HEAD}>Начислено</th>
-            <th className={HEAD}>Штраф</th>
-            <th className={HEAD}>Посуда</th>
-            <th className={HEAD}>К выдаче</th>
-            <th className={HEAD}>Подпись</th>
-          </tr>
-        </thead>
+              <th className={HEAD}>
+                <SortButton label="Должность" sortKey="position" sort={sort} onSort={onSort} />
+              </th>
+              <th className={HEAD}>
+                <SortButton label="Ставка/час" sortKey="rate" sort={sort} onSort={onSort} />
+              </th>
+              {dates.map((date) => (
+                <th key={date} className={cn(HEAD, "min-w-14")}>
+                  {shortDate(date)}
+                </th>
+              ))}
+              <th className={HEAD} title={`Оплачиваемые часы, не больше ${maxHours} ч за смену`}>
+                Часы
+              </th>
+              <th className={cn(HEAD, OVERTIME)} title="Не оплачивается">
+                Переработка
+              </th>
+              <th className={HEAD}>Премия</th>
+              <th className={HEAD}>Начислено</th>
+              <th className={HEAD}>Штраф</th>
+              <th className={HEAD}>Посуда</th>
+              <th className={HEAD}>К выдаче</th>
+              <th className={HEAD}>Подпись</th>
+            </tr>
+          </thead>
 
-        {employees.map((emp, index) => (
-          <tbody key={emp.employee_id}>
-            <tr>
-              <td rowSpan={2} className={cn(CELL, STICKY_NUM, "text-center text-muted-foreground")}>
-                {index + 1}
-              </td>
-              <td rowSpan={2} className={cn(CELL, STICKY_NAME, "font-medium")}>
-                {emp.name}
-              </td>
-              <td rowSpan={2} className={CELL}>
-                <PositionInput
-                  key={`${emp.employee_id}-${emp.position ?? ""}`}
-                  value={emp.position ?? ""}
-                  onCommit={(v) => onPosition(emp.employee_id, v || null)}
-                />
-              </td>
-              <td rowSpan={2} className="border p-0">
-                <MoneyInput
-                  key={`${emp.employee_id}-rate-${emp.rate_per_hour}`}
-                  value={emp.rate_per_hour}
-                  placeholder="ставка"
+          {employees.map((emp, index) => (
+            <tbody key={emp.employee_id}>
+              <tr>
+                <td rowSpan={2} className={cn(CELL, STICKY_NUM, "text-center text-muted-foreground")}>
+                  {index + 1}
+                </td>
+                <td rowSpan={2} className={cn(CELL, STICKY_NAME, "font-medium")}>
+                  {emp.name}
+                </td>
+                <td rowSpan={2} className={CELL}>
+                  <PositionInput
+                    key={`${emp.employee_id}-${emp.position ?? ""}`}
+                    value={emp.position ?? ""}
+                    onCommit={(v) => onPosition(emp.employee_id, v || null)}
+                  />
+                </td>
+                <td rowSpan={2} className="border p-0">
+                  <MoneyInput
+                    key={`${emp.employee_id}-rate-${emp.rate_per_hour}`}
+                    value={emp.rate_per_hour}
+                    placeholder="ставка"
+                    className={cn(
+                      "w-24",
+                      emp.rate_per_hour <= 0 &&
+                        emp.worked_minutes > 0 &&
+                        "bg-amber-50 placeholder:text-amber-600 dark:bg-amber-950/30",
+                    )}
+                    onCommit={(v) => onRate(emp, v)}
+                  />
+                </td>
+                {dates.map((date) => (
+                  <DayCell
+                    key={date}
+                    day={emp.days[date]}
+                    kind="arrival"
+                    onClick={() => onEditDay(emp.employee_id, date)}
+                  />
+                ))}
+                <td rowSpan={2} className={cn(CELL, "text-center font-semibold tabular-nums")}>
+                  {formatHours(emp.paid_minutes ?? emp.worked_minutes)}
+                </td>
+                <td
+                  rowSpan={2}
                   className={cn(
-                    "w-24",
-                    emp.rate_per_hour <= 0 &&
-                      emp.worked_minutes > 0 &&
-                      "bg-amber-50 placeholder:text-amber-600 dark:bg-amber-950/30",
+                    CELL,
+                    "text-center tabular-nums",
+                    emp.overtime_minutes > 0 ? cn(OVERTIME, "font-semibold") : "text-muted-foreground",
                   )}
-                  onCommit={(v) => onRate(emp, v)}
-                />
-              </td>
-              {dates.map((date) => (
-                <DayCell
-                  key={date}
-                  day={emp.days[date]}
-                  kind="arrival"
-                  onClick={() => onEditDay(emp.employee_id, date)}
-                />
-              ))}
-              <td rowSpan={2} className={cn(CELL, "text-center font-semibold tabular-nums")}>
-                {formatHours(emp.worked_minutes)}
-              </td>
-              <AdjustCell rowSpan={2} emp={emp} field="bonus" onAdjust={onAdjust} />
-              <td rowSpan={2} className={cn(CELL, "text-right font-medium tabular-nums")}>
-                {formatNumber(emp.gross)}
-              </td>
-              <AdjustCell rowSpan={2} emp={emp} field="fine" onAdjust={onAdjust} />
-              <AdjustCell rowSpan={2} emp={emp} field="posuda" onAdjust={onAdjust} />
-              <td
-                rowSpan={2}
-                className={cn(CELL, "text-right font-semibold tabular-nums text-emerald-600")}
-              >
-                {formatNumber(emp.net)}
-              </td>
-              <td rowSpan={2} className={cn(CELL, "min-w-28")} />
-            </tr>
-            <tr>
-              {dates.map((date) => (
-                <DayCell
-                  key={date}
-                  day={emp.days[date]}
-                  kind="departure"
-                  onClick={() => onEditDay(emp.employee_id, date)}
-                />
-              ))}
-            </tr>
-          </tbody>
-        ))}
+                >
+                  {emp.overtime_minutes > 0 ? formatHours(emp.overtime_minutes) : "-"}
+                </td>
+                <AdjustCell rowSpan={2} emp={emp} field="bonus" onAdjust={onAdjust} />
+                <td rowSpan={2} className={cn(CELL, "text-right font-medium tabular-nums")}>
+                  {formatNumber(emp.gross)}
+                </td>
+                <AdjustCell rowSpan={2} emp={emp} field="fine" onAdjust={onAdjust} />
+                <AdjustCell rowSpan={2} emp={emp} field="posuda" onAdjust={onAdjust} />
+                <td
+                  rowSpan={2}
+                  className={cn(CELL, "text-right font-semibold tabular-nums text-emerald-600")}
+                >
+                  {formatNumber(emp.net)}
+                </td>
+                <td rowSpan={2} className={cn(CELL, "min-w-28")} />
+              </tr>
+              <tr>
+                {dates.map((date) => (
+                  <DayCell
+                    key={date}
+                    day={emp.days[date]}
+                    kind="departure"
+                    onClick={() => onEditDay(emp.employee_id, date)}
+                  />
+                ))}
+              </tr>
+            </tbody>
+          ))}
 
-        <tfoot>
-          <tr className="bg-muted/60 font-semibold">
-            <td colSpan={4 + dates.length} className={cn(CELL, "text-right")}>
-              Итог
-            </td>
-            <td className={cn(CELL, "text-center tabular-nums")}>
-              {formatHours(total((e) => e.worked_minutes))}
-            </td>
-            <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.bonus))}</td>
-            <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.gross))}</td>
-            <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.fine))}</td>
-            <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.posuda))}</td>
-            <td className={cn(CELL, "text-right tabular-nums text-emerald-600")}>
-              {formatNumber(total((e) => e.net))}
-            </td>
-            <td className={CELL} />
-          </tr>
-        </tfoot>
-      </table>
+          <tfoot>
+            <tr className="bg-muted/60 font-semibold">
+              <td colSpan={4 + dates.length} className={cn(CELL, "text-right")}>
+                Итог
+              </td>
+              <td className={cn(CELL, "text-center tabular-nums")}>
+                {formatHours(total((e) => e.paid_minutes ?? e.worked_minutes))}
+              </td>
+              <td className={cn(CELL, "text-center tabular-nums", OVERTIME)}>
+                {formatHours(total((e) => e.overtime_minutes ?? 0))}
+              </td>
+              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.bonus))}</td>
+              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.gross))}</td>
+              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.fine))}</td>
+              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.posuda))}</td>
+              <td className={cn(CELL, "text-right tabular-nums text-emerald-600")}>
+                {formatNumber(total((e) => e.net))}
+              </td>
+              <td className={CELL} />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   );
 }
@@ -187,10 +215,13 @@ function SortButton({
   );
 }
 
-// Подсказка при наведении: все отрезки смены и пометка о незакрытой смене
+// Подсказка при наведении: отрезки смены, переработка и пометка о незакрытой смене
 function dayTitle(day: PayrollDay | undefined): string | undefined {
   if (!day) return undefined;
   const parts = [...day.segments];
+  if (day.overtime_minutes > 0) {
+    parts.push(`переработка ${formatHours(day.overtime_minutes)} (не оплачивается)`);
+  }
   if (day.open) parts.push("нет ухода после последнего прихода");
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
@@ -205,6 +236,7 @@ function DayCell({
   onClick: () => void;
 }) {
   const value = day?.[kind] ?? null;
+  const overtime = (day?.overtime_minutes ?? 0) > 0;
   return (
     <td className="border p-0 text-center text-xs tabular-nums">
       <button
@@ -214,6 +246,7 @@ function DayCell({
         className={cn(
           "block h-full w-full cursor-pointer px-1.5 py-1 transition-colors hover:bg-muted",
           !value && "text-muted-foreground",
+          value && overtime && OVERTIME,
           value && day && (!day.counted || day.open) && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
           value && day?.manual && "font-semibold text-blue-600",
         )}

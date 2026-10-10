@@ -81,8 +81,12 @@ export type PayrollDay = {
   manual: boolean;
   /** Смена засчитана: есть хотя бы один закрытый отрезок вход -> выход */
   counted: boolean;
-  /** Отработано минут за смену (сумма отрезков) */
+  /** Фактически отработано минут за смену (сумма отрезков) */
   minutes: number | null;
+  /** Оплачиваемые минуты: не больше 10 часов за смену */
+  paid_minutes: number | null;
+  /** Переработка сверх 10 часов, не оплачивается */
+  overtime_minutes: number;
   /** После последнего входа нет выхода */
   open: boolean;
   /** Отрезки работы за смену, например "06:58-12:25" */
@@ -99,9 +103,16 @@ export type PayrollEmployee = {
   /** Ключ - дата начала смены YYYY-MM-DD */
   days: Record<string, PayrollDay>;
   worked_days: number;
+  /** Фактически отработано минут (включая переработку) */
   worked_minutes: number;
-  /** Часы за период (с точностью до сотых) */
+  /** Оплачиваемые минуты (не больше 10 часов за смену) */
+  paid_minutes: number;
+  /** Переработка за период, не оплачивается */
+  overtime_minutes: number;
+  /** Оплачиваемые часы за период (с точностью до сотых) */
   hours: number;
+  /** Часы переработки за период */
+  overtime_hours: number;
   bonus: number;
   fine: number;
   posuda: number;
@@ -113,6 +124,8 @@ export type Payroll = {
   date_from: string;
   date_to: string;
   dates: string[];
+  /** Максимум оплачиваемых минут за смену (600 = 10 часов) */
+  max_paid_minutes_per_shift: number;
   employees: PayrollEmployee[];
 };
 

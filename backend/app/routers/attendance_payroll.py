@@ -11,9 +11,12 @@
 - Ручные правки хранятся в основной БД и имеют приоритет над FaceID:
   заданы и приход, и уход - вся смена одним отрезком; задан только один -
   он заменяет начало первого отрезка или закрывает последний открытый.
-- Оплата почасовая: часы считаются точно по минутам.
+- Оплата почасовая, но за смену оплачивается не более 10 часов.
+  Всё, что больше 10 часов, - переработка: она считается и показывается
+  отдельно, но в зарплату НЕ засчитывается.
   Ставка за час хранится в attendance_rates.rate_per_shift (имя колонки историческое).
-- Начислено = часы * ставка за час + премия; К выдаче = начислено - штраф - посуда.
+- Начислено = оплачиваемые часы * ставка за час + премия;
+  К выдаче = начислено - штраф - посуда.
 """
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -39,6 +42,8 @@ router = APIRouter(prefix="/attendance-payroll", tags=["attendance"])
 
 MAX_PERIOD_DAYS = 62
 SHIFT_CUTOFF_MINUTES = 6 * 60
+# Максимум оплачиваемого времени за одну смену; остальное - переработка
+MAX_PAID_MINUTES_PER_SHIFT = 10 * 60
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 MONEY_STEP = Decimal("0.01")
 
@@ -53,8 +58,12 @@ class PayrollDayOut(BaseModel):
     faceid_departure: str | None
     manual: bool
     counted: bool
-    # Отработано минут за смену (None, если смена не засчитана)
+    # Фактически отработано минут за смену (None, если смена не засчитана)
     minutes: int | None
+    # Оплачиваемые минуты: не больше 10 часов (None, если смена не засчитана)
+    paid_minutes: int | None
+    # Переработка сверх 10 часов, не оплачивается
+    overtime_minutes: int
     # После последнего входа нет выхода
     open: bool
     # Отрезки работы "06:58-12:25", если их больше одного видно перерыв
@@ -69,8 +78,15 @@ class PayrollEmployeeOut(BaseModel):
     currency: str
     days: dict[str, PayrollDayOut]
     worked_days: int
+    # Фактически отработано минут за период (включая переработку)
     worked_minutes: int
+    # Оплачиваемые минуты за период (не больше 10 часов за каждую смену)
+    paid_minutes: int
+    # Переработка за период, не оплачивается
+    overtime_minutes: int
+    # Оплачиваемые часы
     hours: float
+    overtime_hours: float
     bonus: float
     fine: float
     posuda: float
@@ -82,6 +98,7 @@ class PayrollOut(BaseModel):
     date_from: date
     date_to: date
     dates: list[str]
+    max_paid_minutes_per_shift: int
     employees: list[PayrollEmployeeOut]
 
 
@@ -143,6 +160,12 @@ def _day_minutes(start: str, end: str) -> int | None:
     """Длительность отрезка в минутах; None, если конец не позже начала."""
     diff = _shift_minutes(end) - _shift_minutes(start)
     return diff if diff > 0 else None
+
+
+def _split_paid(minutes: int) -> tuple[int, int]:
+    """Делит отработанные минуты смены на оплачиваемые (до 10 ч) и переработку."""
+    paid = min(minutes, MAX_PAID_MINUTES_PER_SHIFT)
+    return paid, minutes - paid
 
 
 def _to_date(value: object) -> date | None:
@@ -289,6 +312,7 @@ def _build_days(
             _apply_override(face_session, manual_arrival, manual_departure) if manual else face_session
         )
         minutes = _session_minutes(session)
+        paid, overtime = _split_paid(minutes)
         arrival, departure = _session_bounds(session)
         face_arrival, face_departure = _session_bounds(face_session)
         result[day.isoformat()] = PayrollDayOut(
@@ -299,6 +323,8 @@ def _build_days(
             manual=manual,
             counted=minutes > 0,
             minutes=minutes or None,
+            paid_minutes=paid or None,
+            overtime_minutes=overtime,
             open=session.open_start is not None,
             segments=[f"{start}-{end}" for start, end in session.segments],
         )
@@ -315,7 +341,7 @@ async def get_payroll(
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
-    """Табель за произвольный период с почасовым расчётом зарплаты по каждому сотруднику."""
+    """Табель за период: оплата по часам, не более 10 часов за смену, переработка отдельно."""
     dates = _validate_period(date_from, date_to)
     faceid, names = await _load_faceid_days(attendance_db, date_from, date_to)
 
@@ -361,11 +387,14 @@ async def get_payroll(
         days = _build_days(employee_id, dates, faceid, overrides)
         worked_days = sum(1 for d in days.values() if d.counted)
         worked_minutes = sum(d.minutes or 0 for d in days.values())
+        paid_minutes = sum(d.paid_minutes or 0 for d in days.values())
+        overtime_minutes = sum(d.overtime_minutes for d in days.values())
         rate_value = Decimal(rate.rate_per_shift) if rate else Decimal(0)
         bonus = Decimal(adjustment.bonus) if adjustment else Decimal(0)
         fine = Decimal(adjustment.fine) if adjustment else Decimal(0)
         posuda = Decimal(adjustment.posuda) if adjustment else Decimal(0)
-        pay = (rate_value * worked_minutes / 60).quantize(MONEY_STEP)
+        # Оплачиваются только минуты в пределах 10 часов за смену
+        pay = (rate_value * paid_minutes / 60).quantize(MONEY_STEP)
         gross = pay + bonus
         employees.append(
             PayrollEmployeeOut(
@@ -377,7 +406,10 @@ async def get_payroll(
                 days=days,
                 worked_days=worked_days,
                 worked_minutes=worked_minutes,
-                hours=round(worked_minutes / 60, 2),
+                paid_minutes=paid_minutes,
+                overtime_minutes=overtime_minutes,
+                hours=round(paid_minutes / 60, 2),
+                overtime_hours=round(overtime_minutes / 60, 2),
                 bonus=float(bonus),
                 fine=float(fine),
                 posuda=float(posuda),
@@ -390,6 +422,7 @@ async def get_payroll(
         date_from=date_from,
         date_to=date_to,
         dates=[d.isoformat() for d in dates],
+        max_paid_minutes_per_shift=MAX_PAID_MINUTES_PER_SHIFT,
         employees=employees,
     )
 

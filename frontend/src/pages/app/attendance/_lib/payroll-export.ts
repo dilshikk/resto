@@ -5,7 +5,16 @@ import { shortDate } from "./utils.ts";
 type Cell = string | number;
 
 const FIXED_LEFT = 4; // №, Имя, Должность, Ставка/час
-const TAIL_HEADERS = ["Часы", "Премия", "Начислено", "Штраф", "Посуда", "К выдаче", "Подпись"];
+const TAIL_HEADERS = [
+  "Часы (оплач.)",
+  "Переработка, ч (не оплач.)",
+  "Премия",
+  "Начислено",
+  "Штраф",
+  "Посуда",
+  "К выдаче",
+  "Подпись",
+];
 
 /** Выгрузка табеля в Excel в том же виде, что и бумажная ведомость: на сотрудника две строки (приход / уход). */
 export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[] = payroll.employees): void {
@@ -31,6 +40,7 @@ export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[
       emp.rate_per_hour,
       ...dates.map((date) => emp.days[date]?.arrival ?? "-"),
       emp.hours,
+      emp.overtime_hours ?? 0,
       emp.bonus,
       emp.gross,
       emp.fine,
@@ -66,6 +76,7 @@ export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[
     "",
     ...dates.map(() => ""),
     Math.round(sum((e) => e.hours) * 100) / 100,
+    Math.round(sum((e) => e.overtime_hours ?? 0) * 100) / 100,
     sum((e) => e.bonus),
     sum((e) => e.gross),
     sum((e) => e.fine),
@@ -82,7 +93,8 @@ export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[
     { wch: 14 },
     { wch: 11 },
     ...dates.map(() => ({ wch: 6 })),
-    { wch: 7 },
+    { wch: 9 },
+    { wch: 12 },
     { wch: 11 },
     { wch: 15 },
     { wch: 10 },
@@ -92,6 +104,6 @@ export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[
   ];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Табель");
+  XLSX.utils.book_append_sheet(wb, ws, "Табель";
   XLSX.writeFile(wb, `tabel_${payroll.date_from}_${payroll.date_to}.xlsx`);
 }
