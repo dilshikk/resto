@@ -25,6 +25,25 @@ const STICKY_NAME = "sticky left-10 z-10 min-w-44 bg-background";
 // Переработка: выделяется фиолетовым, в зарплату не идёт
 const OVERTIME = "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
 
+// Список стандартных должностей для ресторана
+const POSITIONS = [
+  "Повар",
+  "Су-шеф",
+  "Шеф-повар",
+  "Официант",
+  "Старший официант",
+  "Хостес",
+  "Кассир",
+  "Раннер",
+  "Бармен",
+  "Менеджер",
+  "Администратор",
+  "Посудамойщик",
+  "Уборщик",
+  "Охранник",
+  "Другое",
+];
+
 export default function PayrollTable({
   payroll,
   employees,
@@ -90,8 +109,8 @@ export default function PayrollTable({
                 <td rowSpan={2} className={cn(CELL, STICKY_NAME, "font-medium")}>
                   {emp.name}
                 </td>
-                <td rowSpan={2} className={CELL}>
-                  <PositionInput
+                <td rowSpan={2} className="border p-0">
+                  <PositionSelect
                     key={`${emp.employee_id}-${emp.position ?? ""}`}
                     value={emp.position ?? ""}
                     onCommit={(v) => onPosition(emp.employee_id, v || null)}
@@ -321,22 +340,61 @@ function MoneyInput({
   );
 }
 
-function PositionInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
-  const [text, setText] = useState(value);
+/**
+ * Выпадающий список должностей с возможностью ввода произвольного значения.
+ * Если текущая должность не входит в стандартный список — показывается
+ * текстовое поле для ввода вручную.
+ * Сохраняется сразу при выборе из списка или при потере фокуса текстового поля.
+ */
+function PositionSelect({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+  // Если текущее значение не в списке — считаем режим "Другое"
+  const isCustom = value !== "" && !POSITIONS.includes(value) && value !== "Другое";
+  const [selectVal, setSelectVal] = useState(isCustom ? "Другое" : value);
+  const [customText, setCustomText] = useState(isCustom ? value : "");
+  const showCustom = selectVal === "Другое";
+
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const next = e.target.value;
+    setSelectVal(next);
+    if (next !== "Другое") {
+      setCustomText("");
+      onCommit(next === "" ? "" : next);
+    }
+  };
+
+  const handleCustomBlur = () => {
+    const next = customText.trim();
+    onCommit(next || "");
+  };
+
   return (
-    <input
-      type="text"
-      value={text}
-      placeholder="—"
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => {
-        const next = text.trim();
-        if (next !== value) onCommit(next);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-      }}
-      className="w-24 bg-transparent text-sm focus:outline-none"
-    />
+    <div className="flex min-w-[9rem] flex-col gap-0.5 px-1 py-0.5">
+      <select
+        value={selectVal}
+        onChange={handleSelect}
+        className="h-8 w-full cursor-pointer rounded border-0 bg-transparent text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+      >
+        <option value="">—</option>
+        {POSITIONS.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+      </select>
+      {showCustom && (
+        <input
+          type="text"
+          autoFocus
+          value={customText}
+          placeholder="Введите должность"
+          onChange={(e) => setCustomText(e.target.value)}
+          onBlur={handleCustomBlur}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          className="h-7 w-full rounded border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+      )}
+    </div>
   );
 }
