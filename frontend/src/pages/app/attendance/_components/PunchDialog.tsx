@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X } from "lucide-react";
 import type { PayrollDay } from "@/api/attendance.ts";
 
@@ -16,6 +16,15 @@ type Props = {
 export default function PunchDialog({ employeeName, date, day, saving, onSave, onClose }: Props) {
   const [arrival, setArrival] = useState(day?.arrival ?? "");
   const [departure, setDeparture] = useState(day?.departure ?? "");
+
+  // FIX: закрытие диалога по клавише ESC
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   // Если время совпадает с FaceID - не сохраняем как ручное, чтобы не замораживать данные
   const toOverride = (value: string, faceid: string | null | undefined): string | null =>
@@ -89,7 +98,7 @@ export default function PunchDialog({ employeeName, date, day, saving, onSave, o
               disabled={saving}
               className="cursor-pointer rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving ? "..." : "Сохранить"}
+              {saving ? "Сохранение…" : "Сохранить"}
             </button>
           </div>
         </div>

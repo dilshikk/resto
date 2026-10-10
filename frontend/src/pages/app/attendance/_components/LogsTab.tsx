@@ -85,6 +85,12 @@ export default function LogsTab() {
     XLSX.writeFile(wb, `attendance_${dateFrom}_${dateTo}.xlsx`);
   };
 
+  // FIX: для однодневного периода показываем реальное число сотрудников из списка;
+  // для многодневного — количество уникальных сотрудников в результатах,
+  // т.к. «отсутствующих» по всему периоду нельзя корректно определить без явных плановых смен
+  const uniqueInRows = new Set(rows.map((r) => r.employee_id)).size;
+  const totalEmployees = employees.length > 0 ? employees.length : uniqueInRows;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -112,7 +118,7 @@ export default function LogsTab() {
         </button>
       </div>
 
-      <StatsCards rows={rows} totalEmployees={employees.length || rows.length} />
+      <StatsCards rows={rows} totalEmployees={totalEmployees} />
 
       {loading && (
         <div className="flex items-center justify-center py-12">
