@@ -104,6 +104,6 @@ export function exportPayrollExcel(payroll: Payroll, employees: PayrollEmployee[
   ];
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Табель";
+  XLSX.utils.book_append_sheet(wb, ws, "Табель");
   XLSX.writeFile(wb, `tabel_${payroll.date_from}_${payroll.date_to}.xlsx`);
 }
