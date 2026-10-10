@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, useEffect } from "react";
 import type { EmployeeDay } from "../_lib/utils.ts";
 import { formatMinutes, formatMoney } from "../_lib/utils.ts";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -8,6 +8,16 @@ type Props = { rows: EmployeeDay[] };
 
 export default function AttendanceTable({ rows }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Закрытие всех развёрнутых строк по ESC
+  useEffect(() => {
+    if (expanded.size === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpanded(new Set());
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [expanded.size]);
 
   const toggle = (key: string) => {
     setExpanded((prev) => {
@@ -47,9 +57,10 @@ export default function AttendanceTable({ rows }: Props) {
               const key = `${row.employee_id}__${row.date}`;
               const isOpen = expanded.has(key);
               return (
-                <>
+                // FIX: Fragment с key вместо пустого <> — React корректно
+                // отслеживает пары строк при ре-рендеринге списка
+                <Fragment key={key}>
                   <tr
-                    key={key}
                     onClick={() => toggle(key)}
                     className={cn(
                       "cursor-pointer border-b transition-colors hover:bg-muted/30",
@@ -126,32 +137,44 @@ export default function AttendanceTable({ rows }: Props) {
                     </td>
                   </tr>
                   {isOpen && (
-                    <tr key={`${key}__detail`} className="border-b bg-muted/20">
+                    <tr className="border-b bg-muted/20">
                       <td colSpan={9} className="px-4 py-3 pl-10">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                           Все события за {row.date}
                         </p>
                         <div className="flex flex-wrap gap-2">
-                          {row.logs.map((log) => (
-                            <div
-                              key={log.id}
-                              className={cn(
-                                "flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs",
-                                log.direction?.toLowerCase() === "in"
-                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30"
-                                  : "border-rose-200 bg-rose-50 text-rose-700 dark:bg-rose-950/30",
-                              )}
-                            >
-                              <span className="font-medium">{log.access_time}</span>
-                              <span>{log.direction?.toLowerCase() === "in" ? "↑ вход" : "↓ выход"}</span>
-                              {log.device_name && <span className="opacity-70">{log.device_name}</span>}
-                            </div>
-                          ))}
+                          {row.logs.map((log) => {
+                            // FIX: null direction обрабатывается явно
+                            const dir = log.direction?.toLowerCase();
+                            const isIn = dir === "in";
+                            const isOut = dir === "out";
+                            return (
+                              <div
+                                key={log.id}
+                                className={cn(
+                                  "flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs",
+                                  isIn
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30"
+                                    : isOut
+                                      ? "border-rose-200 bg-rose-50 text-rose-700 dark:bg-rose-950/30"
+                                      : "border-border bg-muted text-muted-foreground",
+                                )}
+                              >
+                                <span className="font-medium">{log.access_time}</span>
+                                <span>
+                                  {isIn ? "↑ вход" : isOut ? "↓ выход" : "неизвестно"}
+                                </span>
+                                {log.device_name && (
+                                  <span className="opacity-70">{log.device_name}</span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>

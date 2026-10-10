@@ -8,7 +8,10 @@ type Props = {
 };
 
 export default function StatsCards({ rows, totalEmployees }: Props) {
-  const present = rows.filter((r) => !r.absent).length;
+  // FIX: считаем уникальных сотрудников, которые присутствовали хотя бы раз,
+  // иначе при многодневном периоде один сотрудник даст N строк
+  const presentIds = new Set(rows.filter((r) => !r.absent).map((r) => r.employee_id));
+  const present = presentIds.size;
   const absent = Math.max(0, totalEmployees - present);
   const late = rows.filter((r) => r.is_late).length;
   const leftEarly = rows.filter((r) => r.left_early).length;
