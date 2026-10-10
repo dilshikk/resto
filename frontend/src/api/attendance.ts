@@ -30,6 +30,7 @@ export type AttendanceEmployee = {
 
 export type AttendanceRate = {
   faceid_employee_id: string;
+  /** Отображаемое имя из основной БД (приоритет над FaceID-именем) */
   display_name: string | null;
   /** Ставка за час (имя поля историческое) */
   rate_per_shift: number;
@@ -96,6 +97,8 @@ export type PayrollDay = {
 export type PayrollEmployee = {
   employee_id: string;
   name: string;
+  /** Имя из FaceID (для сверки в диалоге ставок) */
+  faceid_name?: string | null;
   position: string | null;
   /** Ставка за час */
   rate_per_hour: number;

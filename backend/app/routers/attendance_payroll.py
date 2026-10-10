@@ -19,6 +19,9 @@
   используется текущая ставка из attendance_rates.rate_per_shift (имя колонки историческое).
 - Начислено = сумма по сменам (оплачиваемые часы * ставка дня) + премия;
   К выдаче = начислено - штраф - посуда.
+- Имя сотрудника: ПРИОРИТЕТ у display_name из основной БД (attendance_rates).
+  FaceID-имя используется только если display_name не задан. Это гарантирует,
+  что смена имени в FaceID не ломает табель и все данные остаются привязаны к ID.
 """
 from bisect import bisect_right
 from dataclasses import dataclass, field
@@ -78,6 +81,8 @@ class PayrollDayOut(BaseModel):
 class PayrollEmployeeOut(BaseModel):
     employee_id: str
     name: str
+    # Имя из FaceID — для информации, чтобы менеджер мог сверить
+    faceid_name: str | None = None
     position: str | None
     # Ставка за час на конец периода
     rate_per_hour: float
@@ -281,38 +286,50 @@ def _validate_period(date_from: date, date_to: date) -> list[date]:
 async def _load_faceid_days(
     attendance_db: AsyncSession, date_from: date, date_to: date
 ) -> tuple[dict[tuple[str, date], _RawDay], dict[str, str]]:
-    # +1 день: ночные события следующих суток относятся к последней смене периода
+    """Загружает события FaceID и возвращает (карта дней, карта имён из FaceID)."""
+    extended_to = date_to + timedelta(days=1)
     result = await attendance_db.execute(
         text(
             """
-            SELECT employee_id, access_date, access_time, direction, first_name, last_name
+            SELECT employee_id, access_date, access_time, direction,
+                   first_name, last_name
             FROM public.access_logs
             WHERE access_date BETWEEN :date_from AND :date_to
               AND employee_id IS NOT NULL
-            ORDER BY access_datetime
+              AND access_time IS NOT NULL
+            ORDER BY employee_id, access_datetime
             """
         ),
-        {"date_from": str(date_from), "date_to": str(date_to + timedelta(days=1))},
+        {"date_from": str(date_from), "date_to": str(extended_to)},
     )
+    rows = result.mappings().all()
     days: dict[tuple[str, date], _RawDay] = {}
-    names: dict[str, str] = {}
-    for row in result.mappings().all():
-        access_date = _to_date(row["access_date"])
-        hhmm = _to_hhmm(row["access_time"])
-        if access_date is None or hhmm is None:
+    # Имена из FaceID — используются только если display_name не задан
+    faceid_names: dict[str, str] = {}
+    for row in rows:
+        eid = str(row["employee_id"])
+        raw_date = _to_date(row["access_date"])
+        raw_time = _to_hhmm(row["access_time"])
+        if raw_date is None or raw_time is None:
             continue
-        shift_day = _shift_date(access_date, hhmm)
-        if shift_day < date_from or shift_day > date_to:
-            continue
-        employee_id = str(row["employee_id"])
-        raw = days.setdefault((employee_id, shift_day), _RawDay())
         direction = (row["direction"] or "").lower()
-        if direction in ("in", "out"):
-            raw.events.append((direction, hhmm))
-        name = " ".join(p for p in (row["first_name"], row["last_name"]) if p)
-        if name:
-            names[employee_id] = name
-    return days, names
+        if direction not in ("in", "out"):
+            continue
+        shift_day = _shift_date(raw_date, raw_time)
+        if not (date_from <= shift_day <= date_to):
+            continue
+        key = (eid, shift_day)
+        if key not in days:
+            days[key] = _RawDay()
+        days[key].events.append((direction, raw_time))
+        # Сохраняем имя из FaceID как запасной вариант
+        if eid not in faceid_names:
+            fn = (row["first_name"] or "").strip()
+            ln = (row["last_name"] or "").strip()
+            name = " ".join(filter(None, [fn, ln]))
+            if name:
+                faceid_names[eid] = name
+    return days, faceid_names
 
 
 async def _load_rate_timelines(
@@ -389,7 +406,7 @@ async def get_payroll(
 ):
     """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену."""
     dates = _validate_period(date_from, date_to)
-    faceid, names = await _load_faceid_days(attendance_db, date_from, date_to)
+    faceid, faceid_names = await _load_faceid_days(attendance_db, date_from, date_to)
 
     override_rows = (
         await main_db.execute(
@@ -423,8 +440,15 @@ async def get_payroll(
     employee_ids |= {eid for eid, rate in rates.items() if rate.rate_per_shift > 0}
 
     def display_name(employee_id: str) -> str:
+        """
+        ПРИОРИТЕТ: display_name из основной БД (задаётся менеджером).
+        Запасной вариант: имя из FaceID (может меняться при обновлении устройства).
+        Так переименование в FaceID не ломает табель и данные всегда по ID.
+        """
         rate = rates.get(employee_id)
-        return names.get(employee_id) or (rate.display_name if rate and rate.display_name else employee_id)
+        if rate and rate.display_name and rate.display_name.strip():
+            return rate.display_name.strip()
+        return faceid_names.get(employee_id) or employee_id
 
     employees: list[PayrollEmployeeOut] = []
     for employee_id in sorted(employee_ids, key=lambda e: display_name(e).lower()):
@@ -451,6 +475,7 @@ async def get_payroll(
             PayrollEmployeeOut(
                 employee_id=employee_id,
                 name=display_name(employee_id),
+                faceid_name=faceid_names.get(employee_id),
                 position=profile.position if profile else None,
                 rate_per_hour=float(timeline.on(date_to)),
                 rate_changed=len(period_rates) > 1,
