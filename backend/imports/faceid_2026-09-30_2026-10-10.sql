@@ -1,87 +1,24 @@
 -- Импорт отметок FaceID из Excel «Транзакции_2026-09-30_2026-10-10.xlsx».
 -- ВНИМАНИЕ: применять к базе FaceID (ATTENDANCE_DATABASE_URL), НЕ к основной mado_checklist.
+-- Это НЕ миграция: сервис migrate этот файл не запускает. Выполнить один раз вручную:
 --   psql "postgresql://user:pass@host:port/dbname" -v ON_ERROR_STOP=1 -f backend/imports/faceid_2026-09-30_2026-10-10.sql
 --
--- Строк в Excel: 1471; после удаления точных повторов: 1128; сотрудников: 66.
--- «Идентификатор» = access_logs.employee_id.
--- «Регистрация входа» -> direction 'in', «Регистрация выхода» -> 'out'.
+-- Из Excel берутся только 4 поля:
+--   «Идентификатор»   -> employee_id
+--   «Дата»            -> access_date
+--   «Время»           -> access_time
+--   «Тип считывания»  -> direction ('in' = вход, 'out' = выход)
+-- access_datetime вычисляется из даты и времени (местное время Ташкента).
+-- auth_type = 'excel_import' - метка, чтобы импорт можно было найти и откатить.
+--
+-- Отметок: 1128 (точные повторы из Excel удалены).
 -- Идемпотентно: отметка пропускается, если у сотрудника уже есть событие
 -- в ту же дату и минуту. Повторный запуск ничего не дублирует.
 -- Откат: DELETE FROM public.access_logs WHERE auth_type = 'excel_import';
 
 BEGIN;
 
--- Время в Excel местное (Ташкент)
 SET LOCAL timezone = 'Asia/Tashkent';
-
-CREATE TEMP TABLE faceid_import_names (employee_id text PRIMARY KEY, first_name text, last_name text) ON COMMIT DROP;
-INSERT INTO faceid_import_names VALUES
-  ('1036440268', 'Suhrob', NULL),
-  ('1042277274', 'Dilafruz', NULL),
-  ('1116070105', 'Dinara', 'Mambetaliyeva'),
-  ('1139962167', 'Ruslan', NULL),
-  ('1149901481', 'Jonibek', NULL),
-  ('1233941264', 'Ilhom', 'Mahamatov'),
-  ('1250454269', 'Toir', 'Zohidovich'),
-  ('1251614771', 'Alfiya', 'Taurbekova'),
-  ('1451788590', 'Sunnat', 'Isroil'),
-  ('1528048758', 'Alisher', 'Amirkulov'),
-  ('1656197164', 'Shamshoda', 'Garliva'),
-  ('1802381922', 'Muhammadqodir', 'Ulug''xo''jayev'),
-  ('1854307188', 'Sadoqat', 'Ortiqova'),
-  ('1930145800', 'Nozima', NULL),
-  ('1934518185', 'Muhammaddiyor', 'Alibayev'),
-  ('2012086843', 'Olimjon', 'Saddiqov'),
-  ('2025665971', 'Hadicha', 'Husanbaeva'),
-  ('2118992177', 'Suxrob', NULL),
-  ('2138632114', 'Elbek', 'Po''latjonov'),
-  ('2315803772', 'Ibrohim', 'Bahodirov'),
-  ('2326904178', 'Xurshida', 'Davletmuradova'),
-  ('2340306162', 'Husan', 'Tillayev'),
-  ('2427563434', 'Farangiz', 'Runner'),
-  ('2540762862', 'Aygul', 'Yulbaeva'),
-  ('2654310049', 'Rovshan', 'Raximov'),
-  ('2701257252', 'Ikrom', NULL),
-  ('2702901410', 'Sogdiana', 'Espergenova'),
-  ('2707392321', 'Dilshod', 'Shomuratov'),
-  ('2749630914', 'Diyaz', NULL),
-  ('2808677695', 'Umida', NULL),
-  ('2902089666', 'Nargiza', NULL),
-  ('2906339320', 'Anvar', 'Rahmatxojaev'),
-  ('2919332167', 'Yulduz', NULL),
-  ('3031823980', 'Javoxir', 'Saloyidinov'),
-  ('3119261177', 'Tursunoyni', 'Onasi'),
-  ('3139805403', 'Nodirbek', NULL),
-  ('3225708537', 'MuhammadAli', NULL),
-  ('3646813924', 'Yevgeniy', NULL),
-  ('3716483407', 'Uktir', 'Bar'),
-  ('3929101078', 'Samandar', NULL),
-  ('3939275546', 'Tursunoy', NULL),
-  ('4054070840', 'Gulshod', NULL),
-  ('4129294475', 'Dana', NULL),
-  ('4300622134', 'Asadbek', 'Eshmamatov'),
-  ('4554295470', 'Uralbek', NULL),
-  ('5014707953', 'Otabek', NULL),
-  ('5040771371', 'Eldor', 'Hayttimetov'),
-  ('5049842647', 'Asliddin', NULL),
-  ('5320408421', 'Feruzbek', 'Ismatov'),
-  ('5436995272', 'Salohiddin', 'Abdullaev'),
-  ('5525301497', 'Fariddun', NULL),
-  ('5548522361', 'Abdurashid', 'Muxammadjonov'),
-  ('5706765516', 'Samira', 'Saylauova'),
-  ('5906849409', 'Mamurjon', 'Xojanov'),
-  ('5941651951', 'jahongir', 'Faxriddinov'),
-  ('6024470431', 'Shuxrat', 'Baxtiyorov'),
-  ('6116217623', 'MuhammadSiddiq', NULL),
-  ('6145152805', 'Javoxir', 'Xushboqov'),
-  ('6158416370', 'Ali', 'Mamadaliyev'),
-  ('6206182280', 'Dilshod', NULL),
-  ('6515142375', 'Tursunoy', 'Pirjanova'),
-  ('6556890067', 'Dilafruz', 'Daniyarova'),
-  ('6645369595', 'Gulchehra', NULL),
-  ('6715493855', 'Sirojiddin', NULL),
-  ('6737590266', 'Diyorbek', NULL),
-  ('6942548262', 'Shayboniyhon', NULL);
 
 CREATE TEMP TABLE faceid_import_events (employee_id text, d date, t time, direction text) ON COMMIT DROP;
 INSERT INTO faceid_import_events VALUES
@@ -368,19 +305,13 @@ INSERT INTO faceid_import_events VALUES
   ('3929101078','2026-10-10','20:22','out'), ('2749630914','2026-10-10','20:26','out'), ('5548522361','2026-10-10','20:26','out'), ('2326904178','2026-10-10','20:27','out'),
   ('3646813924','2026-10-10','22:06','out'), ('6158416370','2026-10-10','22:07','out'), ('6116217623','2026-10-10','22:09','out'), ('2702901410','2026-10-10','22:12','out');
 
--- Подготовленные отметки (типы приводятся к типам access_logs при вставке)
-CREATE TEMP TABLE faceid_import ON COMMIT DROP AS
-SELECT e.employee_id, (e.d + e.t)::timestamptz AS access_datetime, e.d AS access_date, e.t AS access_time,
-       n.first_name, n.last_name, e.direction
-FROM faceid_import_events e
-JOIN faceid_import_names n USING (employee_id);
 
 -- Убираем то, что уже есть в базе (тот же сотрудник, дата и минута)
-DELETE FROM faceid_import i
+DELETE FROM faceid_import_events i
 USING public.access_logs l
 WHERE l.employee_id::text = i.employee_id
-  AND l.access_date::text = i.access_date::text
-  AND left(l.access_time::text, 5) = left(i.access_time::text, 5);
+  AND l.access_date::text = i.d::text
+  AND left(l.access_time::text, 5) = left(i.t::text, 5);
 
 DO $$
 DECLARE
@@ -396,28 +327,25 @@ BEGIN
   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
   WHERE a.attrelid = 'public.access_logs'::regclass AND a.attname = 'id' AND NOT a.attisdropped;
 
-  -- Значения приводятся к фактическим типам колонок access_logs
+  -- Только нужные колонки; значения приводятся к фактическим типам access_logs
   SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum),
          string_agg(format('(%s)::%s', m.expr, format_type(a.atttypid, a.atttypmod)), ', ' ORDER BY a.attnum)
     INTO col_list, expr_list
   FROM pg_attribute a
   JOIN (VALUES
-    ('id', '(SELECT COALESCE(MAX(id), 0) FROM public.access_logs) + ROW_NUMBER() OVER (ORDER BY i.access_datetime, i.employee_id)'),
+    ('id', '(SELECT COALESCE(MAX(id), 0) FROM public.access_logs) + ROW_NUMBER() OVER (ORDER BY i.d, i.t, i.employee_id)'),
     ('employee_id', 'i.employee_id'),
-    ('access_datetime', 'i.access_datetime'),
-    ('access_date', 'i.access_date'),
-    ('access_time', 'i.access_time'),
-    ('first_name', 'i.first_name'),
-    ('last_name', 'i.last_name'),
+    ('access_date', 'i.d'),
+    ('access_time', 'i.t'),
+    ('access_datetime', '(i.d + i.t)::timestamptz'),
     ('direction', 'i.direction'),
-    ('auth_type', '''excel_import'''),
-    ('device_name', '''Excel import''')
+    ('auth_type', '''excel_import''')
   ) AS m(col, expr) ON m.col = a.attname
   WHERE a.attrelid = 'public.access_logs'::regclass
     AND NOT a.attisdropped
     AND (a.attname <> 'id' OR id_needs_value);
 
-  EXECUTE format('INSERT INTO public.access_logs (%s) SELECT %s FROM faceid_import i', col_list, expr_list);
+  EXECUTE format('INSERT INTO public.access_logs (%s) SELECT %s FROM faceid_import_events i', col_list, expr_list);
 
   GET DIAGNOSTICS inserted = ROW_COUNT;
   RAISE NOTICE 'Добавлено отметок FaceID: %', inserted;
