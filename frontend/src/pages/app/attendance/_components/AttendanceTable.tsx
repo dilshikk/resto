@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 import type { EmployeeDay } from "../_lib/utils.ts";
 import { formatMinutes, formatMoney } from "../_lib/utils.ts";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -9,7 +9,7 @@ type Props = { rows: EmployeeDay[] };
 export default function AttendanceTable({ rows }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  // Закрытие по ESC
+  // Закрытие всех развёрнутых строк по ESC
   useEffect(() => {
     if (expanded.size === 0) return;
     const handler = (e: KeyboardEvent) => {
@@ -57,9 +57,9 @@ export default function AttendanceTable({ rows }: Props) {
               const key = `${row.employee_id}__${row.date}`;
               const isOpen = expanded.has(key);
               return (
-                // FIX: используем Fragment с key вместо пустого <>
-                // чтобы React корректно отслеживал строки при ре-рендеринге
-                <tr.Fragment key={key}>
+                // FIX: Fragment с key вместо пустого <> — React корректно
+                // отслеживает пары строк при ре-рендеринге списка
+                <Fragment key={key}>
                   <tr
                     onClick={() => toggle(key)}
                     className={cn(
@@ -137,14 +137,14 @@ export default function AttendanceTable({ rows }: Props) {
                     </td>
                   </tr>
                   {isOpen && (
-                    <tr key={`${key}__detail`} className="border-b bg-muted/20">
+                    <tr className="border-b bg-muted/20">
                       <td colSpan={9} className="px-4 py-3 pl-10">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                           Все события за {row.date}
                         </p>
                         <div className="flex flex-wrap gap-2">
                           {row.logs.map((log) => {
-                            // FIX: null direction обрабатывается явно, не падает в дефолтную ветку
+                            // FIX: null direction обрабатывается явно
                             const dir = log.direction?.toLowerCase();
                             const isIn = dir === "in";
                             const isOut = dir === "out";
@@ -174,7 +174,7 @@ export default function AttendanceTable({ rows }: Props) {
                       </td>
                     </tr>
                   )}
-                </tr.Fragment>
+                </Fragment>
               );
             })}
           </tbody>
