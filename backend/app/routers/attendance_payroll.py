@@ -11,6 +11,10 @@
 - Ручные правки хранятся в основной БД и имеют приоритет над FaceID:
   заданы и приход, и уход - вся смена одним отрезком; задан только один -
   он заменяет начало первого отрезка или закрывает последний открытый.
+- Штраф за пропущенную отметку: если в FaceID за смену есть приход без ухода
+  или уход без прихода - штраф MISSING_PUNCH_FINE за каждую такую смену.
+  Ручная правка исправляет часы, но штраф НЕ отменяет (он считается по FaceID).
+  Смены за сегодня и вчера не штрафуются - сотрудник может быть ещё на работе.
 - Оплата почасовая, но за смену оплачивается не более 10 часов.
   Всё, что больше 10 часов, - переработка: она считается и показывается
   отдельно, но в зарплату НЕ засчитывается.
@@ -18,7 +22,7 @@
   поэтому изменение ставки не пересчитывает прошлые периоды. Если истории нет,
   используется текущая ставка из attendance_rates.rate_per_shift (имя колонки историческое).
 - Начислено = сумма по сменам (оплачиваемые часы * ставка дня) + премия;
-  К выдаче = начислено - штраф - посуда.
+  К выдаче = начислено - штраф - штраф за отметки - посуда.
 - Имя сотрудника: ПРИОРИТЕТ у display_name из основной БД (attendance_rates).
   FaceID-имя используется только если display_name не задан. Это гарантирует,
   что смена имени в FaceID не ломает табель и все данные остаются привязаны к ID.
@@ -50,6 +54,8 @@ MAX_PERIOD_DAYS = 62
 SHIFT_CUTOFF_MINUTES = 6 * 60
 # Максимум оплачиваемого времени за одну смену; остальное - переработка
 MAX_PAID_MINUTES_PER_SHIFT = 10 * 60
+# Штраф за смену, где в FaceID нет прихода или ухода
+MISSING_PUNCH_FINE = Decimal(30000)
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 MONEY_STEP = Decimal("0.01")
 
@@ -76,6 +82,10 @@ class PayrollDayOut(BaseModel):
     segments: list[str]
     # Ставка за час, действовавшая в день смены
     rate: float = 0
+    # В FaceID нет прихода или ухода за смену
+    missing_punch: bool = False
+    # Штраф за пропущенную отметку за эту смену
+    missing_punch_fine: float = 0
 
 
 class PayrollEmployeeOut(BaseModel):
@@ -102,6 +112,9 @@ class PayrollEmployeeOut(BaseModel):
     overtime_hours: float
     bonus: float
     fine: float
+    # Смен без прихода или ухода в FaceID и сумма штрафа за них
+    missing_punch_count: int = 0
+    missing_punch_fine: float = 0
     posuda: float
     gross: float
     net: float
@@ -112,6 +125,7 @@ class PayrollOut(BaseModel):
     date_to: date
     dates: list[str]
     max_paid_minutes_per_shift: int
+    missing_punch_fine_amount: float
     employees: list[PayrollEmployeeOut]
 
 
@@ -274,6 +288,22 @@ def _session_bounds(session: _Session) -> tuple[str | None, str | None]:
     return session.open_start, None
 
 
+def _has_missing_punch(raw: _RawDay | None, day: date, today: date) -> bool:
+    """В FaceID есть отметки за смену, но нет прихода или ухода.
+
+    Считается только по FaceID: ручная правка штраф не снимает.
+    Смены за сегодня и вчера пропускаем - ночная смена может быть ещё не закрыта.
+    """
+    if raw is None or not raw.events or day >= today - timedelta(days=1):
+        return False
+    kinds = {kind for kind, _ in raw.events}
+    if kinds != {"in", "out"}:
+        return True
+    session = _build_session(raw.events)
+    # Последний вход остался без выхода
+    return session.open_start is not None or not session.segments
+
+
 def _validate_period(date_from: date, date_to: date) -> list[date]:
     if date_to < date_from:
         raise HTTPException(status_code=422, detail="Дата окончания раньше даты начала")
@@ -361,6 +391,7 @@ def _build_days(
     timeline: _RateTimeline,
 ) -> dict[str, PayrollDayOut]:
     result: dict[str, PayrollDayOut] = {}
+    today = date.today()
     for day in dates:
         raw = faceid.get((employee_id, day))
         override = overrides.get((employee_id, day))
@@ -377,6 +408,7 @@ def _build_days(
         paid, overtime = _split_paid(minutes)
         arrival, departure = _session_bounds(session)
         face_arrival, face_departure = _session_bounds(face_session)
+        missing_punch = _has_missing_punch(raw, day, today)
         result[day.isoformat()] = PayrollDayOut(
             arrival=arrival,
             departure=departure,
@@ -390,6 +422,8 @@ def _build_days(
             open=session.open_start is not None,
             segments=[f"{start}-{end}" for start, end in session.segments],
             rate=float(timeline.on(day)),
+            missing_punch=missing_punch,
+            missing_punch_fine=float(MISSING_PUNCH_FINE) if missing_punch else 0,
         )
     return result
 
@@ -464,6 +498,8 @@ async def get_payroll(
         bonus = Decimal(adjustment.bonus) if adjustment else Decimal(0)
         fine = Decimal(adjustment.fine) if adjustment else Decimal(0)
         posuda = Decimal(adjustment.posuda) if adjustment else Decimal(0)
+        missing_punch_count = sum(1 for d in days.values() if d.missing_punch)
+        missing_punch_fine = MISSING_PUNCH_FINE * missing_punch_count
         # Каждая смена оплачивается по ставке своего дня, не более 10 часов
         pay = sum(
             (Decimal(str(d.rate)) * (d.paid_minutes or 0) / 60 for d in days.values()),
@@ -489,9 +525,11 @@ async def get_payroll(
                 overtime_hours=round(overtime_minutes / 60, 2),
                 bonus=float(bonus),
                 fine=float(fine),
+                missing_punch_count=missing_punch_count,
+                missing_punch_fine=float(missing_punch_fine),
                 posuda=float(posuda),
                 gross=float(gross),
-                net=float(gross - fine - posuda),
+                net=float(gross - fine - missing_punch_fine - posuda),
             )
         )
 
@@ -500,6 +538,7 @@ async def get_payroll(
         date_to=date_to,
         dates=[d.isoformat() for d in dates],
         max_paid_minutes_per_shift=MAX_PAID_MINUTES_PER_SHIFT,
+        missing_punch_fine_amount=float(MISSING_PUNCH_FINE),
         employees=employees,
     )
 
