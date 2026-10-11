@@ -24,6 +24,8 @@ const STICKY_NUM = "sticky left-0 z-10 w-10 min-w-10 bg-background";
 const STICKY_NAME = "sticky left-10 z-10 min-w-44 bg-background";
 // Переработка: выделяется фиолетовым, в зарплату не идёт
 const OVERTIME = "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
+// Смена без прихода или ухода в FaceID - штраф
+const MISSING = "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300";
 
 // Список стандартных должностей для ресторана
 const POSITIONS = [
@@ -44,6 +46,10 @@ const POSITIONS = [
   "Другое",
 ];
 
+// Итоговые удержания: ручная сумма + автоматическая
+const fineTotal = (e: PayrollEmployee) => e.fine + (e.missing_punch_fine ?? 0);
+const posudaTotal = (e: PayrollEmployee) => e.posuda_total ?? e.posuda;
+
 export default function PayrollTable({
   payroll,
   employees,
@@ -56,6 +62,8 @@ export default function PayrollTable({
 }: Props) {
   const { dates } = payroll;
   const maxHours = Math.round((payroll.max_paid_minutes_per_shift ?? 600) / 60);
+  const fineAmount = payroll.missing_punch_fine_amount ?? 30000;
+  const posudaAmount = payroll.posuda_per_shift ?? 5000;
   const total = (pick: (e: PayrollEmployee) => number) =>
     employees.reduce((acc, e) => acc + pick(e), 0);
 
@@ -64,7 +72,11 @@ export default function PayrollTable({
       <p className="text-xs text-muted-foreground">
         За смену оплачивается не больше {maxHours} ч. Время сверх этого показано как{" "}
         <span className={cn("rounded px-1 font-medium", OVERTIME)}>переработка</span> и в
-        зарплату не засчитывается.
+        зарплату не засчитывается. Смена без прихода или ухода{" "}
+        <span className={cn("rounded px-1 font-medium", MISSING)}>
+          штраф {formatNumber(fineAmount)}
+        </span>
+        . Посуда удерживается автоматически: {formatNumber(posudaAmount)} за каждую смену.
       </p>
       <div className="overflow-x-auto rounded-xl border">
         <table className="w-max min-w-full border-collapse text-sm">
@@ -93,8 +105,12 @@ export default function PayrollTable({
               </th>
               <th className={HEAD}>Премия</th>
               <th className={HEAD}>Начислено</th>
-              <th className={HEAD}>Штраф</th>
-              <th className={HEAD}>Посуда</th>
+              <th className={HEAD} title="Ручной штраф + штраф за пропущенные отметки">
+                Штраф
+              </th>
+              <th className={HEAD} title="Ручная посуда + посуда за смены">
+                Посуда
+              </th>
               <th className={HEAD}>К выдаче</th>
               <th className={HEAD}>Подпись</th>
             </tr>
@@ -155,8 +171,24 @@ export default function PayrollTable({
                 <td rowSpan={2} className={cn(CELL, "text-right font-medium tabular-nums")}>
                   {formatNumber(emp.gross)}
                 </td>
-                <AdjustCell rowSpan={2} emp={emp} field="fine" onAdjust={onAdjust} />
-                <AdjustCell rowSpan={2} emp={emp} field="posuda" onAdjust={onAdjust} />
+                <AdjustCell
+                  rowSpan={2}
+                  emp={emp}
+                  field="fine"
+                  onAdjust={onAdjust}
+                  auto={emp.missing_punch_fine ?? 0}
+                  autoLabel={`за отметки (${emp.missing_punch_count ?? 0} см.)`}
+                  totalValue={fineTotal(emp)}
+                />
+                <AdjustCell
+                  rowSpan={2}
+                  emp={emp}
+                  field="posuda"
+                  onAdjust={onAdjust}
+                  auto={emp.posuda_auto ?? 0}
+                  autoLabel={`за смены (${emp.worked_days} см.)`}
+                  totalValue={posudaTotal(emp)}
+                />
                 <td
                   rowSpan={2}
                   className={cn(CELL, "text-right font-semibold tabular-nums text-emerald-600")}
@@ -191,8 +223,10 @@ export default function PayrollTable({
               </td>
               <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.bonus))}</td>
               <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.gross))}</td>
-              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.fine))}</td>
-              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total((e) => e.posuda))}</td>
+              <td className={cn(CELL, "text-right tabular-nums text-red-600")}>
+                {formatNumber(total(fineTotal))}
+              </td>
+              <td className={cn(CELL, "text-right tabular-nums")}>{formatNumber(total(posudaTotal))}</td>
               <td className={cn(CELL, "text-right tabular-nums text-emerald-600")}>
                 {formatNumber(total((e) => e.net))}
               </td>
@@ -234,7 +268,7 @@ function SortButton({
   );
 }
 
-// Подсказка при наведении: отрезки смены, переработка и пометка о незакрытой смене
+// Подсказка при наведении: отрезки смены, переработка, штраф и незакрытая смена
 function dayTitle(day: PayrollDay | undefined): string | undefined {
   if (!day) return undefined;
   const parts = [...day.segments];
@@ -242,6 +276,9 @@ function dayTitle(day: PayrollDay | undefined): string | undefined {
     parts.push(`переработка ${formatHours(day.overtime_minutes)} (не оплачивается)`);
   }
   if (day.open) parts.push("нет ухода после последнего прихода");
+  if (day.missing_punch) {
+    parts.push(`штраф ${formatNumber(day.missing_punch_fine ?? 0)}: нет прихода или ухода в FaceID`);
+  }
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
@@ -256,6 +293,7 @@ function DayCell({
 }) {
   const value = day?.[kind] ?? null;
   const overtime = (day?.overtime_minutes ?? 0) > 0;
+  const missing = Boolean(day?.missing_punch);
   return (
     <td className="border p-0 text-center text-xs tabular-nums">
       <button
@@ -267,10 +305,11 @@ function DayCell({
           !value && "text-muted-foreground",
           value && overtime && OVERTIME,
           value && day && (!day.counted || day.open) && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
+          missing && MISSING,
           value && day?.manual && "font-semibold text-blue-600",
         )}
       >
-        {value ?? "-"}
+        {value ?? (missing ? "нет" : "-")}
       </button>
     </td>
   );
@@ -281,21 +320,37 @@ function AdjustCell({
   field,
   rowSpan,
   onAdjust,
+  auto = 0,
+  autoLabel,
+  totalValue,
 }: {
   emp: PayrollEmployee;
   field: AdjustmentField;
   rowSpan: number;
   onAdjust: Props["onAdjust"];
+  /** Автоматическая сумма, которая прибавляется к ручной */
+  auto?: number;
+  autoLabel?: string;
+  totalValue?: number;
 }) {
   const value = emp[field];
   return (
-    <td rowSpan={rowSpan} className="border p-0">
+    <td rowSpan={rowSpan} className="border p-0 align-top">
       <MoneyInput
         key={`${emp.employee_id}-${field}-${value}`}
         value={value}
+        placeholder={auto > 0 ? "вручную" : "0"}
         className="w-28"
         onCommit={(v) => onAdjust(emp.employee_id, field, v)}
       />
+      {auto > 0 && (
+        <div className="space-y-0.5 border-t px-2 py-1 text-right text-[11px] leading-tight tabular-nums">
+          <div className="text-muted-foreground" title={autoLabel}>
+            +{formatNumber(auto)} {autoLabel}
+          </div>
+          <div className="font-semibold text-red-600">= {formatNumber(totalValue ?? value + auto)}</div>
+        </div>
+      )}
     </td>
   );
 }
