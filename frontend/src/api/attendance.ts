@@ -92,6 +92,10 @@ export type PayrollDay = {
   open: boolean;
   /** Отрезки работы за смену, например "06:58-12:25" */
   segments: string[];
+  /** В FaceID нет прихода или ухода за смену - начислен штраф */
+  missing_punch?: boolean;
+  /** Сумма штрафа за пропущенную отметку за смену */
+  missing_punch_fine?: number;
 };
 
 export type PayrollEmployee = {
@@ -117,8 +121,17 @@ export type PayrollEmployee = {
   /** Часы переработки за период */
   overtime_hours: number;
   bonus: number;
+  /** Ручной штраф за период */
   fine: number;
+  /** Смен без прихода или ухода и автоматический штраф за них */
+  missing_punch_count?: number;
+  missing_punch_fine?: number;
+  /** Ручная посуда за период */
   posuda: number;
+  /** Автоматическая посуда за отработанные смены */
+  posuda_auto?: number;
+  /** Вся посуда к удержанию (ручная + автоматическая) */
+  posuda_total?: number;
   gross: number;
   net: number;
 };
@@ -129,6 +142,10 @@ export type Payroll = {
   dates: string[];
   /** Максимум оплачиваемых минут за смену (600 = 10 часов) */
   max_paid_minutes_per_shift: number;
+  /** Штраф за одну смену без прихода или ухода */
+  missing_punch_fine_amount?: number;
+  /** Посуда за одну смену */
+  posuda_per_shift?: number;
   employees: PayrollEmployee[];
 };
 
