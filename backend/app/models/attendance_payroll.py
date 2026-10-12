@@ -1,7 +1,7 @@
 import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, Numeric, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -20,6 +20,33 @@ class AttendancePunchOverride(Base):
     shift_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
     arrival: Mapped[str | None] = mapped_column(String(5), nullable=True)
     departure: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AttendanceShiftFine(Base):
+    """Ручной штраф за конкретную смену: опоздание или невыход.
+
+    kind: "late" (опоздание) | "absence" (невыход на смену).
+    Для опоздания хранится плановое начало смены и минуты опоздания.
+    """
+    __tablename__ = "attendance_shift_fines"
+    __table_args__ = (
+        UniqueConstraint(
+            "faceid_employee_id", "shift_date", "kind", name="uq_attendance_shift_fine_employee_date_kind"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    faceid_employee_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shift_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    planned_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    late_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(
