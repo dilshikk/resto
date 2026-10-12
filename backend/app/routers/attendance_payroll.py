@@ -15,6 +15,9 @@
   или уход без прихода - штраф MISSING_PUNCH_FINE за каждую такую смену.
   Ручная правка исправляет часы, но штраф НЕ отменяет (он считается по FaceID).
   Смены за сегодня и вчера не штрафуются - сотрудник может быть ещё на работе.
+- Ручные штрафы за смену (attendance_shift_fines): опоздание и невыход.
+  Менеджер ставит их в окне смены; сумма за опоздание обычно
+  LATE_FINE_PER_MINUTE * минуты, но сохраняется та, что ввёл менеджер.
 - Посуда: POSUDA_PER_SHIFT за каждую засчитанную смену удерживается автоматически.
   Ручная сумма посуды за период (если задана) добавляется сверху.
 - Оплата почасовая, но за смену оплачивается не более 10 часов.
@@ -24,7 +27,7 @@
   поэтому изменение ставки не пересчитывает прошлые периоды. Если истории нет,
   используется текущая ставка из attendance_rates.rate_per_shift (имя колонки историческое).
 - Начислено = сумма по сменам (оплачиваемые часы * ставка дня) + премия;
-  К выдаче = начислено - штраф - штраф за отметки - посуда (авто + ручная).
+  К выдаче = начислено - штраф - штраф за отметки - штрафы за смены - посуда.
 - Имя сотрудника: ПРИОРИТЕТ у display_name из основной БД (attendance_rates).
   FaceID-имя используется только если display_name не задан. Это гарантирует,
   что смена имени в FaceID не ломает табель и все данные остаются привязаны к ID.
@@ -33,6 +36,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -46,6 +50,7 @@ from app.models.attendance_payroll import (
     AttendanceEmployeeProfile,
     AttendancePayrollAdjustment,
     AttendancePunchOverride,
+    AttendanceShiftFine,
 )
 from app.models.attendance_rate import AttendanceRate, AttendanceRateHistory
 from app.models.employee import Employee
@@ -60,11 +65,23 @@ MAX_PAID_MINUTES_PER_SHIFT = 10 * 60
 MISSING_PUNCH_FINE = Decimal(30000)
 # Удержание за посуду за каждую засчитанную смену
 POSUDA_PER_SHIFT = Decimal(5000)
+# Подсказка для окна смены: штраф за минуту опоздания
+LATE_FINE_PER_MINUTE = Decimal(1000)
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 MONEY_STEP = Decimal("0.01")
 
+FineKind = Literal["late", "absence"]
+
 
 # ── Схемы ────────────────────────────────────────────────────────────────────
+
+class ShiftFineOut(BaseModel):
+    kind: FineKind
+    amount: float
+    planned_start: str | None = None
+    late_minutes: int | None = None
+    note: str | None = None
+
 
 class PayrollDayOut(BaseModel):
     # Первый приход и последний закрытый уход за смену
@@ -90,6 +107,8 @@ class PayrollDayOut(BaseModel):
     missing_punch: bool = False
     # Штраф за пропущенную отметку за эту смену
     missing_punch_fine: float = 0
+    # Ручные штрафы за смену (опоздание, невыход)
+    fines: list[ShiftFineOut] = []
 
 
 class PayrollEmployeeOut(BaseModel):
@@ -119,6 +138,9 @@ class PayrollEmployeeOut(BaseModel):
     # Смен без прихода или ухода в FaceID и сумма штрафа за них
     missing_punch_count: int = 0
     missing_punch_fine: float = 0
+    # Ручные штрафы за смены (опоздания, невыходы)
+    shift_fines_count: int = 0
+    shift_fines_total: float = 0
     # Ручная посуда за период (вводит менеджер)
     posuda: float
     # Автоматическая посуда: POSUDA_PER_SHIFT * засчитанные смены
@@ -136,6 +158,7 @@ class PayrollOut(BaseModel):
     max_paid_minutes_per_shift: int
     missing_punch_fine_amount: float
     posuda_per_shift: float
+    late_fine_per_minute: float
     employees: list[PayrollEmployeeOut]
 
 
@@ -145,6 +168,17 @@ class PunchUpsert(BaseModel):
     # None = не переопределять, брать из FaceID. Если оба None - правка удаляется.
     arrival: str | None = Field(default=None, pattern=TIME_PATTERN)
     departure: str | None = Field(default=None, pattern=TIME_PATTERN)
+    note: str | None = Field(default=None, max_length=255)
+
+
+class ShiftFineUpsert(BaseModel):
+    faceid_employee_id: str = Field(min_length=1, max_length=64)
+    shift_date: date
+    kind: FineKind
+    # 0 или None = удалить штраф этого вида за смену
+    amount: float | None = Field(default=None, ge=0, le=1e10)
+    planned_start: str | None = Field(default=None, pattern=TIME_PATTERN)
+    late_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
     note: str | None = Field(default=None, max_length=255)
 
 
@@ -393,11 +427,57 @@ async def _load_rate_timelines(
     return timelines
 
 
+async def _load_shift_fines(
+    main_db: AsyncSession, date_from: date, date_to: date
+) -> dict[tuple[str, date], list[ShiftFineOut]]:
+    rows = (
+        await main_db.execute(
+            select(AttendanceShiftFine).where(
+                AttendanceShiftFine.shift_date >= date_from,
+                AttendanceShiftFine.shift_date <= date_to,
+            )
+        )
+    ).scalars().all()
+    result: dict[tuple[str, date], list[ShiftFineOut]] = {}
+    for row in rows:
+        if row.kind not in ("late", "absence"):
+            continue
+        result.setdefault((row.faceid_employee_id, row.shift_date), []).append(
+            ShiftFineOut(
+                kind=row.kind,
+                amount=float(row.amount),
+                planned_start=row.planned_start,
+                late_minutes=row.late_minutes,
+                note=row.note,
+            )
+        )
+    return result
+
+
+def _empty_day(fines: list[ShiftFineOut]) -> PayrollDayOut:
+    """День без отметок, но со штрафом (например, невыход на смену)."""
+    return PayrollDayOut(
+        arrival=None,
+        departure=None,
+        faceid_arrival=None,
+        faceid_departure=None,
+        manual=False,
+        counted=False,
+        minutes=None,
+        paid_minutes=None,
+        overtime_minutes=0,
+        open=False,
+        segments=[],
+        fines=fines,
+    )
+
+
 def _build_days(
     employee_id: str,
     dates: list[date],
     faceid: dict[tuple[str, date], _RawDay],
     overrides: dict[tuple[str, date], AttendancePunchOverride],
+    shift_fines: dict[tuple[str, date], list[ShiftFineOut]],
     timeline: _RateTimeline,
 ) -> dict[str, PayrollDayOut]:
     result: dict[str, PayrollDayOut] = {}
@@ -405,7 +485,10 @@ def _build_days(
     for day in dates:
         raw = faceid.get((employee_id, day))
         override = overrides.get((employee_id, day))
+        fines = shift_fines.get((employee_id, day), [])
         if raw is None and override is None:
+            if fines:
+                result[day.isoformat()] = _empty_day(fines)
             continue
         face_session = _build_session(raw.events) if raw else _Session()
         manual_arrival = override.arrival if override else None
@@ -434,6 +517,7 @@ def _build_days(
             rate=float(timeline.on(day)),
             missing_punch=missing_punch,
             missing_punch_fine=float(MISSING_PUNCH_FINE) if missing_punch else 0,
+            fines=fines,
         )
     return result
 
@@ -461,6 +545,7 @@ async def get_payroll(
         )
     ).scalars().all()
     overrides = {(o.faceid_employee_id, o.shift_date): o for o in override_rows}
+    shift_fines = await _load_shift_fines(main_db, date_from, date_to)
 
     adjustment_rows = (
         await main_db.execute(
@@ -479,8 +564,9 @@ async def get_payroll(
         for p in (await main_db.execute(select(AttendanceEmployeeProfile))).scalars().all()
     }
 
-    # В табель попадают те, у кого есть отметки/правки/премии за период или задана ставка
+    # В табель попадают те, у кого есть отметки/правки/премии/штрафы за период или задана ставка
     employee_ids = {eid for eid, _ in faceid} | {eid for eid, _ in overrides} | set(adjustments)
+    employee_ids |= {eid for eid, _ in shift_fines}
     employee_ids |= {eid for eid, rate in rates.items() if rate.rate_per_shift > 0}
 
     def display_name(employee_id: str) -> str:
@@ -500,7 +586,7 @@ async def get_payroll(
         timeline = timelines.get(employee_id, _RateTimeline())
         adjustment = adjustments.get(employee_id)
         profile = profiles.get(employee_id)
-        days = _build_days(employee_id, dates, faceid, overrides, timeline)
+        days = _build_days(employee_id, dates, faceid, overrides, shift_fines, timeline)
         worked_days = sum(1 for d in days.values() if d.counted)
         worked_minutes = sum(d.minutes or 0 for d in days.values())
         paid_minutes = sum(d.paid_minutes or 0 for d in days.values())
@@ -512,6 +598,8 @@ async def get_payroll(
         posuda_total = posuda + posuda_auto
         missing_punch_count = sum(1 for d in days.values() if d.missing_punch)
         missing_punch_fine = MISSING_PUNCH_FINE * missing_punch_count
+        all_fines = [f for d in days.values() for f in d.fines]
+        shift_fines_total = sum((Decimal(str(f.amount)) for f in all_fines), Decimal(0))
         # Каждая смена оплачивается по ставке своего дня, не более 10 часов
         pay = sum(
             (Decimal(str(d.rate)) * (d.paid_minutes or 0) / 60 for d in days.values()),
@@ -539,11 +627,13 @@ async def get_payroll(
                 fine=float(fine),
                 missing_punch_count=missing_punch_count,
                 missing_punch_fine=float(missing_punch_fine),
+                shift_fines_count=len(all_fines),
+                shift_fines_total=float(shift_fines_total),
                 posuda=float(posuda),
                 posuda_auto=float(posuda_auto),
                 posuda_total=float(posuda_total),
                 gross=float(gross),
-                net=float(gross - fine - missing_punch_fine - posuda_total),
+                net=float(gross - fine - missing_punch_fine - shift_fines_total - posuda_total),
             )
         )
 
@@ -554,6 +644,7 @@ async def get_payroll(
         max_paid_minutes_per_shift=MAX_PAID_MINUTES_PER_SHIFT,
         missing_punch_fine_amount=float(MISSING_PUNCH_FINE),
         posuda_per_shift=float(POSUDA_PER_SHIFT),
+        late_fine_per_minute=float(LATE_FINE_PER_MINUTE),
         employees=employees,
     )
 
@@ -589,6 +680,44 @@ async def upsert_punch(
     row.arrival = body.arrival
     row.departure = body.departure
     row.note = body.note
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.put("/shift-fine")
+async def upsert_shift_fine(
+    body: ShiftFineUpsert,
+    _current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """Штраф за смену (опоздание или невыход). Сумма 0 или пустая - штраф удаляется."""
+    row = (
+        await db.execute(
+            select(AttendanceShiftFine).where(
+                AttendanceShiftFine.faceid_employee_id == body.faceid_employee_id,
+                AttendanceShiftFine.shift_date == body.shift_date,
+                AttendanceShiftFine.kind == body.kind,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if not body.amount:
+        if row is not None:
+            await db.delete(row)
+            await db.commit()
+        return {"status": "ok"}
+
+    if row is None:
+        row = AttendanceShiftFine(
+            faceid_employee_id=body.faceid_employee_id,
+            shift_date=body.shift_date,
+            kind=body.kind,
+        )
+        db.add(row)
+    row.amount = Decimal(str(body.amount))
+    row.planned_start = body.planned_start if body.kind == "late" else None
+    row.late_minutes = body.late_minutes if body.kind == "late" else None
+    row.note = (body.note or "").strip() or None
     await db.commit()
     return {"status": "ok"}
 
