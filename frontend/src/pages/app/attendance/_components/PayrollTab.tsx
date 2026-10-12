@@ -15,7 +15,7 @@ import { formatHours } from "../_lib/format-hours.ts";
 import { sortEmployees, usePayrollSort } from "../_lib/payroll-sort.ts";
 import { usePayrollMutations } from "../_hooks/use-payroll-mutations.ts";
 import PayrollTable from "./PayrollTable.tsx";
-import PunchDialog from "./PunchDialog.tsx";
+import PunchDialog, { type ShiftFineDraft } from "./PunchDialog.tsx";
 
 const MAX_DAYS = 62;
 
@@ -34,7 +34,8 @@ export default function PayrollTab() {
   const [dateFrom, setDateFrom] = useState(initial.from);
   const [dateTo, setDateTo] = useState(initial.to);
   const [editing, setEditing] = useState<Editing | null>(null);
-  const { punch, adjustment, position, rate } = usePayrollMutations();
+  const [savingDay, setSavingDay] = useState(false);
+  const { punch, shiftFine, adjustment, position, rate } = usePayrollMutations();
   const { sort, toggle } = usePayrollSort();
 
   const length = dateFrom && dateTo ? periodLength(dateFrom, dateTo) : 0;
@@ -65,17 +66,24 @@ export default function PayrollTab() {
       currency: employee.currency,
     });
 
-  const handleSavePunch = (arrival: string | null, departure: string | null) => {
+  // Сохраняет время смены и штрафы за смену одним нажатием
+  const handleSaveDay = async (
+    arrival: string | null,
+    departure: string | null,
+    fines: ShiftFineDraft[],
+  ) => {
     if (!editing) return;
-    punch.mutate(
-      {
-        faceid_employee_id: editing.employeeId,
-        shift_date: editing.date,
-        arrival,
-        departure,
-      },
-      { onSuccess: () => setEditing(null) },
-    );
+    const base = { faceid_employee_id: editing.employeeId, shift_date: editing.date };
+    setSavingDay(true);
+    try {
+      await punch.mutateAsync({ ...base, arrival, departure });
+      await Promise.all(fines.map((fine) => shiftFine.mutateAsync({ ...base, ...fine })));
+      setEditing(null);
+    } catch {
+      // Ошибку уже показал toast в мутации
+    } finally {
+      setSavingDay(false);
+    }
   };
 
   const totalNet = employees.reduce((acc, e) => acc + e.net, 0);
@@ -207,9 +215,10 @@ export default function PayrollTab() {
           <p className="text-xs text-muted-foreground">
             Оплата почасовая: часы считаются по минутам от прихода до ухода. Ставку за час, премию,
             штраф и посуду можно менять прямо в таблице, сохраняется при выходе из поля. Нажмите на
-            время, чтобы указать приход и уход вручную. Синим выделено ручное время, жёлтым - смена
-            без прихода или ухода (не считается). Нажмите на заголовок «Имя», «Должность» или
-            «Ставка/час», чтобы отсортировать - выбор запоминается.
+            время, чтобы указать приход и уход вручную или поставить штраф за опоздание или невыход.
+            Синим выделено ручное время, жёлтым - смена без прихода или ухода (не считается), красной
+            точкой - смена со штрафом. Нажмите на заголовок «Имя», «Должность» или «Ставка/час»,
+            чтобы отсортировать - выбор запоминается.
           </p>
         </>
       )}
@@ -220,8 +229,9 @@ export default function PayrollTab() {
           employeeName={editingEmployee.name}
           date={editing.date}
           day={editingEmployee.days[editing.date]}
-          saving={punch.isPending}
-          onSave={handleSavePunch}
+          saving={savingDay}
+          lateFinePerMinute={data?.late_fine_per_minute ?? 1000}
+          onSave={(a, d, fines) => void handleSaveDay(a, d, fines)}
           onClose={() => setEditing(null)}
         />
       )}
