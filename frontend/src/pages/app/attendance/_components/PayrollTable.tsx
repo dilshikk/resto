@@ -27,6 +27,8 @@ const OVERTIME = "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-v
 // Смена без прихода или ухода в FaceID - штраф
 const MISSING = "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300";
 
+const FINE_LABELS = { late: "опоздание", absence: "невыход" } as const;
+
 // Список стандартных должностей для ресторана
 const POSITIONS = [
   "Повар",
@@ -46,9 +48,18 @@ const POSITIONS = [
   "Другое",
 ];
 
+// Автоматические и посменные штрафы (без ручного штрафа за период)
+const autoFines = (e: PayrollEmployee) => (e.missing_punch_fine ?? 0) + (e.shift_fines_total ?? 0);
 // Итоговые удержания: ручная сумма + автоматическая
-const fineTotal = (e: PayrollEmployee) => e.fine + (e.missing_punch_fine ?? 0);
+const fineTotal = (e: PayrollEmployee) => e.fine + autoFines(e);
 const posudaTotal = (e: PayrollEmployee) => e.posuda_total ?? e.posuda;
+
+function fineLabel(e: PayrollEmployee): string {
+  const parts: string[] = [];
+  if (e.missing_punch_count) parts.push(`отметки ${e.missing_punch_count}`);
+  if (e.shift_fines_count) parts.push(`смены ${e.shift_fines_count}`);
+  return parts.length ? `(${parts.join(", ")})` : "";
+}
 
 export default function PayrollTable({
   payroll,
@@ -105,7 +116,10 @@ export default function PayrollTable({
               </th>
               <th className={HEAD}>Премия</th>
               <th className={HEAD}>Начислено</th>
-              <th className={HEAD} title="Ручной штраф + штраф за пропущенные отметки">
+              <th
+                className={HEAD}
+                title="Ручной штраф + за пропущенные отметки + за опоздания и невыходы"
+              >
                 Штраф
               </th>
               <th className={HEAD} title="Ручная посуда + посуда за смены">
@@ -176,8 +190,8 @@ export default function PayrollTable({
                   emp={emp}
                   field="fine"
                   onAdjust={onAdjust}
-                  auto={emp.missing_punch_fine ?? 0}
-                  autoLabel={`за отметки (${emp.missing_punch_count ?? 0} см.)`}
+                  auto={autoFines(emp)}
+                  autoLabel={fineLabel(emp)}
                   totalValue={fineTotal(emp)}
                 />
                 <AdjustCell
@@ -268,7 +282,7 @@ function SortButton({
   );
 }
 
-// Подсказка при наведении: отрезки смены, переработка, штраф и незакрытая смена
+// Подсказка при наведении: отрезки смены, переработка, штрафы и незакрытая смена
 function dayTitle(day: PayrollDay | undefined): string | undefined {
   if (!day) return undefined;
   const parts = [...day.segments];
@@ -278,6 +292,11 @@ function dayTitle(day: PayrollDay | undefined): string | undefined {
   if (day.open) parts.push("нет ухода после последнего прихода");
   if (day.missing_punch) {
     parts.push(`штраф ${formatNumber(day.missing_punch_fine ?? 0)}: нет прихода или ухода в FaceID`);
+  }
+  for (const fine of day.fines ?? []) {
+    const minutes = fine.kind === "late" && fine.late_minutes ? ` ${fine.late_minutes} мин` : "";
+    const note = fine.note ? ` - ${fine.note}` : "";
+    parts.push(`штраф ${formatNumber(fine.amount)}: ${FINE_LABELS[fine.kind]}${minutes}${note}`);
   }
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
@@ -294,6 +313,9 @@ function DayCell({
   const value = day?.[kind] ?? null;
   const overtime = (day?.overtime_minutes ?? 0) > 0;
   const missing = Boolean(day?.missing_punch);
+  const absence = day?.fines?.some((f) => f.kind === "absence") ?? false;
+  // Красная точка только в верхней строке (приход), чтобы не дублировать
+  const hasShiftFine = kind === "arrival" && (day?.fines?.length ?? 0) > 0;
   return (
     <td className="border p-0 text-center text-xs tabular-nums">
       <button
@@ -301,15 +323,18 @@ function DayCell({
         title={dayTitle(day)}
         onClick={onClick}
         className={cn(
-          "block h-full w-full cursor-pointer px-1.5 py-1 transition-colors hover:bg-muted",
+          "relative block h-full w-full cursor-pointer px-1.5 py-1 transition-colors hover:bg-muted",
           !value && "text-muted-foreground",
           value && overtime && OVERTIME,
           value && day && (!day.counted || day.open) && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
-          missing && MISSING,
+          (missing || absence) && MISSING,
           value && day?.manual && "font-semibold text-blue-600",
         )}
       >
-        {value ?? (missing ? "нет" : "-")}
+        {value ?? (absence ? "невых." : missing ? "нет" : "-")}
+        {hasShiftFine && (
+          <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-red-600" />
+        )}
       </button>
     </td>
   );
