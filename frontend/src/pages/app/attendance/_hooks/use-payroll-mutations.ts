@@ -4,6 +4,7 @@ import {
   savePayrollAdjustment,
   savePayrollPosition,
   savePayrollPunch,
+  saveShiftFine,
   upsertAttendanceRate,
 } from "@/api/attendance.ts";
 
@@ -22,6 +23,11 @@ export function usePayrollMutations() {
 
   const punch = useMutation({
     mutationFn: savePayrollPunch,
+    onSuccess: refresh,
+    onError: fail,
+  });
+  const shiftFine = useMutation({
+    mutationFn: saveShiftFine,
     onSuccess: refresh,
     onError: fail,
   });
@@ -49,5 +55,5 @@ export function usePayrollMutations() {
     onError: fail,
   });
 
-  return { punch, adjustment, position, rate };
+  return { punch, shiftFine, adjustment, position, rate };
 }
