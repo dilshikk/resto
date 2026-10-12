@@ -71,6 +71,18 @@ export async function upsertAttendanceRate(
 
 // ── Табель и расчёт зарплаты ─────────────────────────────────────────────────
 
+/** Вид ручного штрафа за смену */
+export type ShiftFineKind = "late" | "absence";
+
+export type ShiftFine = {
+  kind: ShiftFineKind;
+  amount: number;
+  /** Плановое начало смены (для опоздания) */
+  planned_start?: string | null;
+  late_minutes?: number | null;
+  note?: string | null;
+};
+
 export type PayrollDay = {
   /** Первый приход за смену (ручной, если есть, иначе FaceID) */
   arrival: string | null;
@@ -96,6 +108,8 @@ export type PayrollDay = {
   missing_punch?: boolean;
   /** Сумма штрафа за пропущенную отметку за смену */
   missing_punch_fine?: number;
+  /** Ручные штрафы за смену (опоздание, невыход) */
+  fines?: ShiftFine[];
 };
 
 export type PayrollEmployee = {
@@ -126,6 +140,9 @@ export type PayrollEmployee = {
   /** Смен без прихода или ухода и автоматический штраф за них */
   missing_punch_count?: number;
   missing_punch_fine?: number;
+  /** Ручные штрафы за смены (опоздания, невыходы) */
+  shift_fines_count?: number;
+  shift_fines_total?: number;
   /** Ручная посуда за период */
   posuda: number;
   /** Автоматическая посуда за отработанные смены */
@@ -146,6 +163,8 @@ export type Payroll = {
   missing_punch_fine_amount?: number;
   /** Посуда за одну смену */
   posuda_per_shift?: number;
+  /** Подсказка: штраф за минуту опоздания */
+  late_fine_per_minute?: number;
   employees: PayrollEmployee[];
 };
 
@@ -165,6 +184,19 @@ export async function savePayrollPunch(body: {
   departure: string | null;
 }): Promise<void> {
   await apiClient.put("/attendance-payroll/punch", body);
+}
+
+/** Штраф за смену. amount 0 - удалить штраф этого вида */
+export async function saveShiftFine(body: {
+  faceid_employee_id: string;
+  shift_date: string;
+  kind: ShiftFineKind;
+  amount: number;
+  planned_start?: string | null;
+  late_minutes?: number | null;
+  note?: string | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/shift-fine", body);
 }
 
 export async function savePayrollAdjustment(body: {
