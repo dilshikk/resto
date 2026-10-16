@@ -1,5 +1,6 @@
 """
 Роутер посещаемости (FaceID) + ставки из основной БД.
+Доступ только для менеджеров и выше: в ответе есть ставки сотрудников.
 """
 from datetime import date, timedelta
 from typing import Optional
@@ -9,11 +10,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance_database import get_attendance_db
-from app.auth import get_current_web_user, require_manager
+from app.auth import require_manager
 from app.database import get_db
 from app.models.attendance_rate import AttendanceRate
 from app.models.employee import Employee
-from app.models.user import User
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
@@ -23,7 +23,7 @@ async def get_attendance_logs(
     date_from: date = Query(..., description="Начало периода YYYY-MM-DD"),
     date_to: date = Query(..., description="Конец периода YYYY-MM-DD"),
     employee_id: Optional[str] = Query(None, description="Фильтр по ID сотрудника"),
-    _current_user: User = Depends(get_current_web_user),
+    _current: Employee = Depends(require_manager),
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
@@ -75,7 +75,7 @@ async def get_attendance_logs(
 
 @router.get("/employees")
 async def get_attendance_employees(
-    _current_user: User = Depends(get_current_web_user),
+    _current: Employee = Depends(require_manager),
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
