@@ -83,6 +83,12 @@ export type ShiftFine = {
   note?: string | null;
 };
 
+/** Откуда взят график: задан в табеле или из раздела «Смены» */
+export type PlanSource = "tabel" | "shifts";
+
+/** set - задать время, day_off - выходной, clear - убрать график табеля */
+export type PlanMode = "set" | "day_off" | "clear";
+
 export type PayrollDay = {
   /** Первый приход за смену (ручной, если есть, иначе FaceID) */
   arrival: string | null;
@@ -110,6 +116,18 @@ export type PayrollDay = {
   missing_punch_fine?: number;
   /** Ручные штрафы за смену (опоздание, невыход) */
   fines?: ShiftFine[];
+  /** График: во сколько должен прийти и уйти */
+  planned_start?: string | null;
+  planned_end?: string | null;
+  plan_source?: PlanSource | null;
+  /** По графику выходной */
+  day_off?: boolean;
+  /** Отклонение от графика в минутах */
+  late_minutes?: number;
+  early_minutes?: number;
+  /** Автоштрафы по графику */
+  late_fine?: number;
+  early_fine?: number;
 };
 
 export type PayrollEmployee = {
@@ -118,6 +136,8 @@ export type PayrollEmployee = {
   /** Имя из FaceID (для сверки в диалоге ставок) */
   faceid_name?: string | null;
   position: string | null;
+  /** Сотрудник системы, по которому берётся график из «Смен» */
+  linked_employee_id?: number | null;
   /** Ставка за час */
   rate_per_hour: number;
   currency: string;
@@ -143,6 +163,11 @@ export type PayrollEmployee = {
   /** Ручные штрафы за смены (опоздания, невыходы) */
   shift_fines_count?: number;
   shift_fines_total?: number;
+  /** Автоштрафы по графику */
+  late_count?: number;
+  late_fine_total?: number;
+  early_count?: number;
+  early_fine_total?: number;
   /** Ручная посуда за период */
   posuda: number;
   /** Автоматическая посуда за отработанные смены */
@@ -163,8 +188,12 @@ export type Payroll = {
   missing_punch_fine_amount?: number;
   /** Посуда за одну смену */
   posuda_per_shift?: number;
-  /** Подсказка: штраф за минуту опоздания */
+  /** Штраф за минуту опоздания */
   late_fine_per_minute?: number;
+  /** Опоздание до стольких минут не штрафуется */
+  late_grace_minutes?: number;
+  /** Штраф за минуту раннего ухода */
+  early_leave_fine_per_minute?: number;
   employees: PayrollEmployee[];
 };
 
@@ -197,6 +226,25 @@ export async function saveShiftFine(body: {
   note?: string | null;
 }): Promise<void> {
   await apiClient.put("/attendance-payroll/shift-fine", body);
+}
+
+/** График в табеле на один или несколько дней */
+export async function savePayrollPlan(body: {
+  faceid_employee_id: string;
+  shift_dates: string[];
+  mode: PlanMode;
+  planned_start: string | null;
+  planned_end: string | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/plan", body);
+}
+
+/** Привязка сотрудника FaceID к сотруднику системы (график из «Смен»). null - отвязать */
+export async function savePayrollLink(body: {
+  faceid_employee_id: string;
+  employee_id: number | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/link", body);
 }
 
 export async function savePayrollAdjustment(body: {
