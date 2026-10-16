@@ -14,6 +14,8 @@ from app.models.login_attempt import LoginAttempt
 from app.models.attendance_rate import AttendanceRate, AttendanceRateHistory
 from app.models.attendance_payroll import (
     AttendancePunchOverride,
+    AttendanceShiftFine,
+    AttendancePlannedShift,
     AttendancePayrollAdjustment,
     AttendanceEmployeeProfile,
 )
@@ -31,6 +33,8 @@ __all__ = [
     "AttendanceRate",
     "AttendanceRateHistory",
     "AttendancePunchOverride",
+    "AttendanceShiftFine",
+    "AttendancePlannedShift",
     "AttendancePayrollAdjustment",
     "AttendanceEmployeeProfile",
 ]

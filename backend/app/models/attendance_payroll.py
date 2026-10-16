@@ -1,7 +1,7 @@
 import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -54,6 +54,28 @@ class AttendanceShiftFine(Base):
     )
 
 
+class AttendancePlannedShift(Base):
+    """План смены, заданный в табеле: во сколько должен прийти и уйти.
+
+    Имеет приоритет над планом из раздела «Смены».
+    Оба времени пустые = выходной (план из «Смен» на этот день игнорируется).
+    """
+    __tablename__ = "attendance_planned_shifts"
+    __table_args__ = (
+        UniqueConstraint("faceid_employee_id", "shift_date", name="uq_attendance_plan_employee_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    faceid_employee_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    shift_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    planned_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    planned_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AttendancePayrollAdjustment(Base):
     """Премия, штраф и вычет за посуду для сотрудника за конкретный период."""
     __tablename__ = "attendance_payroll_adjustments"
@@ -78,12 +100,16 @@ class AttendancePayrollAdjustment(Base):
 
 
 class AttendanceEmployeeProfile(Base):
-    """Дополнительные данные сотрудника FaceID (должность для табеля)."""
+    """Дополнительные данные сотрудника FaceID: должность и привязка к сотруднику системы."""
     __tablename__ = "attendance_employee_profiles"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     faceid_employee_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     position: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Сотрудник системы: по нему берётся план из раздела «Смены» (migration 028)
+    employee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

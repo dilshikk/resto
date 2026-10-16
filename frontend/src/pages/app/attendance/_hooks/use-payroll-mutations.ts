@@ -1,7 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { isAxiosError } from "axios";
 import { toast } from "sonner";
 import {
   savePayrollAdjustment,
+  savePayrollLink,
+  savePayrollPlan,
   savePayrollPosition,
   savePayrollPunch,
   saveShiftFine,
@@ -16,10 +19,19 @@ type RateInput = {
   currency: string;
 };
 
+// Текст ошибки с сервера, если он есть (например «сотрудник уже привязан»)
+function errorText(error: unknown): string {
+  if (isAxiosError(error)) {
+    const detail: unknown = error.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+  }
+  return "Не удалось сохранить изменения";
+}
+
 export function usePayrollMutations() {
   const qc = useQueryClient();
   const refresh = () => qc.invalidateQueries({ queryKey: ["attendance-payroll"] });
-  const fail = () => toast.error("Не удалось сохранить изменения");
+  const fail = (error: unknown) => toast.error(errorText(error));
 
   const punch = useMutation({
     mutationFn: savePayrollPunch,
@@ -29,6 +41,19 @@ export function usePayrollMutations() {
   const shiftFine = useMutation({
     mutationFn: saveShiftFine,
     onSuccess: refresh,
+    onError: fail,
+  });
+  const plan = useMutation({
+    mutationFn: savePayrollPlan,
+    onSuccess: refresh,
+    onError: fail,
+  });
+  const link = useMutation({
+    mutationFn: savePayrollLink,
+    onSuccess: () => {
+      void refresh();
+      toast.success("Привязка сохранена");
+    },
     onError: fail,
   });
   const adjustment = useMutation({
@@ -55,5 +80,5 @@ export function usePayrollMutations() {
     onError: fail,
   });
 
-  return { punch, shiftFine, adjustment, position, rate };
+  return { punch, shiftFine, plan, link, adjustment, position, rate };
 }

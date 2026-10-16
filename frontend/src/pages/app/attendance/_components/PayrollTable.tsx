@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { AdjustmentField, Payroll, PayrollDay, PayrollEmployee } from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
@@ -12,7 +12,8 @@ type Props = {
   employees: PayrollEmployee[];
   sort: PayrollSort;
   onSort: (key: SortKey) => void;
-  onEditDay: (employeeId: string, date: string) => void;
+  /** withShift = нажатие с Shift (или включён «Режим графика») - открыть график */
+  onEditDay: (employeeId: string, date: string, withShift: boolean) => void;
   onAdjust: (employeeId: string, field: AdjustmentField, value: number) => void;
   onRate: (employee: PayrollEmployee, value: number) => void;
   onPosition: (employeeId: string, position: string | null) => void;
@@ -26,6 +27,8 @@ const STICKY_NAME = "sticky left-10 z-10 min-w-44 bg-background";
 const OVERTIME = "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300";
 // Смена без прихода или ухода в FaceID - штраф
 const MISSING = "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300";
+// Опоздание или ранний уход по графику - автоштраф
+const DEVIATION = "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300";
 
 const FINE_LABELS = { late: "опоздание", absence: "невыход" } as const;
 
@@ -49,7 +52,11 @@ const POSITIONS = [
 ];
 
 // Автоматические и посменные штрафы (без ручного штрафа за период)
-const autoFines = (e: PayrollEmployee) => (e.missing_punch_fine ?? 0) + (e.shift_fines_total ?? 0);
+const autoFines = (e: PayrollEmployee) =>
+  (e.missing_punch_fine ?? 0) +
+  (e.shift_fines_total ?? 0) +
+  (e.late_fine_total ?? 0) +
+  (e.early_fine_total ?? 0);
 // Итоговые удержания: ручная сумма + автоматическая
 const fineTotal = (e: PayrollEmployee) => e.fine + autoFines(e);
 const posudaTotal = (e: PayrollEmployee) => e.posuda_total ?? e.posuda;
@@ -58,6 +65,8 @@ function fineLabel(e: PayrollEmployee): string {
   const parts: string[] = [];
   if (e.missing_punch_count) parts.push(`отметки ${e.missing_punch_count}`);
   if (e.shift_fines_count) parts.push(`смены ${e.shift_fines_count}`);
+  if (e.late_count) parts.push(`опозд. ${e.late_count}`);
+  if (e.early_count) parts.push(`ранн. уход ${e.early_count}`);
   return parts.length ? `(${parts.join(", ")})` : "";
 }
 
@@ -87,7 +96,10 @@ export default function PayrollTable({
         <span className={cn("rounded px-1 font-medium", MISSING)}>
           штраф {formatNumber(fineAmount)}
         </span>
-        . Посуда удерживается автоматически: {formatNumber(posudaAmount)} за каждую смену.
+        .{" "}
+        <span className={cn("rounded px-1 font-medium", DEVIATION)}>Оранжевым</span> - опоздание
+        или ранний уход по графику, серым над временем - время по графику. Посуда
+        удерживается автоматически: {formatNumber(posudaAmount)} за каждую смену.
       </p>
       <div className="overflow-x-auto rounded-xl border">
         <table className="w-max min-w-full border-collapse text-sm">
@@ -118,7 +130,7 @@ export default function PayrollTable({
               <th className={HEAD}>Начислено</th>
               <th
                 className={HEAD}
-                title="Ручной штраф + за пропущенные отметки + за опоздания и невыходы"
+                title="Ручной штраф + за пропущенные отметки + за опоздания, ранние уходы и невыходы"
               >
                 Штраф
               </th>
@@ -165,7 +177,7 @@ export default function PayrollTable({
                     key={date}
                     day={emp.days[date]}
                     kind="arrival"
-                    onClick={() => onEditDay(emp.employee_id, date)}
+                    onClick={(withShift) => onEditDay(emp.employee_id, date, withShift)}
                   />
                 ))}
                 <td rowSpan={2} className={cn(CELL, "text-center font-semibold tabular-nums")}>
@@ -217,7 +229,7 @@ export default function PayrollTable({
                     key={date}
                     day={emp.days[date]}
                     kind="departure"
-                    onClick={() => onEditDay(emp.employee_id, date)}
+                    onClick={(withShift) => onEditDay(emp.employee_id, date, withShift)}
                   />
                 ))}
               </tr>
@@ -282,10 +294,17 @@ function SortButton({
   );
 }
 
-// Подсказка при наведении: отрезки смены, переработка, штрафы и незакрытая смена
+// Подсказка при наведении: график, отрезки смены, переработка, штрафы и незакрытая смена
 function dayTitle(day: PayrollDay | undefined): string | undefined {
-  if (!day) return undefined;
-  const parts = [...day.segments];
+  if (!day) return "Shift+клик - задать график";
+  const parts: string[] = [];
+  if (day.day_off) {
+    parts.push("по графику выходной");
+  } else if (day.planned_start || day.planned_end) {
+    const source = day.plan_source === "shifts" ? " (из «Смен»)" : "";
+    parts.push(`график ${day.planned_start ?? "?"}-${day.planned_end ?? "?"}${source}`);
+  }
+  parts.push(...day.segments);
   if (day.overtime_minutes > 0) {
     parts.push(`переработка ${formatHours(day.overtime_minutes)} (не оплачивается)`);
   }
@@ -293,12 +312,27 @@ function dayTitle(day: PayrollDay | undefined): string | undefined {
   if (day.missing_punch) {
     parts.push(`штраф ${formatNumber(day.missing_punch_fine ?? 0)}: нет прихода или ухода в FaceID`);
   }
+  if (day.late_minutes) {
+    parts.push(
+      day.late_fine
+        ? `опоздал на ${day.late_minutes} мин, штраф ${formatNumber(day.late_fine)}`
+        : `опоздал на ${day.late_minutes} мин (без автоштрафа)`,
+    );
+  }
+  if (day.early_minutes) {
+    parts.push(
+      day.early_fine
+        ? `ушёл раньше на ${day.early_minutes} мин, штраф ${formatNumber(day.early_fine)}`
+        : `ушёл раньше на ${day.early_minutes} мин`,
+    );
+  }
   for (const fine of day.fines ?? []) {
     const minutes = fine.kind === "late" && fine.late_minutes ? ` ${fine.late_minutes} мин` : "";
     const note = fine.note ? ` - ${fine.note}` : "";
     parts.push(`штраф ${formatNumber(fine.amount)}: ${FINE_LABELS[fine.kind]}${minutes}${note}`);
   }
-  return parts.length > 0 ? parts.join(", ") : undefined;
+  parts.push("Shift+клик - график");
+  return parts.join(", ");
 }
 
 function DayCell({
@@ -308,30 +342,55 @@ function DayCell({
 }: {
   day: PayrollDay | undefined;
   kind: "arrival" | "departure";
-  onClick: () => void;
+  onClick: (withShift: boolean) => void;
 }) {
   const value = day?.[kind] ?? null;
+  const planned = kind === "arrival" ? day?.planned_start : day?.planned_end;
   const overtime = (day?.overtime_minutes ?? 0) > 0;
   const missing = Boolean(day?.missing_punch);
   const absence = day?.fines?.some((f) => f.kind === "absence") ?? false;
+  // Оранжевый - только та строка, где есть автоштраф (приход или уход)
+  const deviation = kind === "arrival" ? (day?.late_fine ?? 0) > 0 : (day?.early_fine ?? 0) > 0;
   // Красная точка только в верхней строке (приход), чтобы не дублировать
   const hasShiftFine = kind === "arrival" && (day?.fines?.length ?? 0) > 0;
+
+  const handleClick = (e: MouseEvent<HTMLButtonElement>) => onClick(e.shiftKey);
+  // Shift+клик в браузере выделяет текст - отменяем выделение
+  const preventSelect = (e: MouseEvent<HTMLButtonElement>) => {
+    if (e.shiftKey) e.preventDefault();
+  };
+
+  const fallback = absence
+    ? "невых."
+    : missing
+      ? "нет"
+      : day?.day_off && kind === "arrival"
+        ? "вых."
+        : "-";
+
   return (
     <td className="border p-0 text-center text-xs tabular-nums">
       <button
         type="button"
         title={dayTitle(day)}
-        onClick={onClick}
+        onClick={handleClick}
+        onMouseDown={preventSelect}
         className={cn(
-          "relative block h-full w-full cursor-pointer px-1.5 py-1 transition-colors hover:bg-muted",
+          "relative flex h-full w-full cursor-pointer flex-col items-center justify-center px-1.5 py-1 leading-tight transition-colors hover:bg-muted",
           !value && "text-muted-foreground",
           value && overtime && OVERTIME,
           value && day && (!day.counted || day.open) && "bg-amber-50 text-amber-700 dark:bg-amber-950/30",
+          value && deviation && DEVIATION,
           (missing || absence) && MISSING,
           value && day?.manual && "font-semibold text-blue-600",
         )}
       >
-        {value ?? (absence ? "невых." : missing ? "нет" : "-")}
+        {planned && (
+          <span className="text-[10px] font-normal text-muted-foreground" aria-label="по графику">
+            {planned}
+          </span>
+        )}
+        <span>{value ?? fallback}</span>
         {hasShiftFine && (
           <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-red-600" />
         )}

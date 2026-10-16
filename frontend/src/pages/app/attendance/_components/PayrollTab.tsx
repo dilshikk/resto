@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Calendar, Download, RefreshCw } from "lucide-react";
-import { fetchPayroll, type AdjustmentField, type PayrollEmployee } from "@/api/attendance.ts";
+import { CalendarClock, Calendar, Download, RefreshCw } from "lucide-react";
+import {
+  fetchPayroll,
+  type AdjustmentField,
+  type PayrollEmployee,
+  type PlanMode,
+} from "@/api/attendance.ts";
 import { cn } from "@/lib/utils.ts";
 import {
   formatNumber,
@@ -16,6 +21,7 @@ import { sortEmployees, usePayrollSort } from "../_lib/payroll-sort.ts";
 import { usePayrollMutations } from "../_hooks/use-payroll-mutations.ts";
 import PayrollTable from "./PayrollTable.tsx";
 import PunchDialog, { type ShiftFineDraft } from "./PunchDialog.tsx";
+import PlanDialog from "./PlanDialog.tsx";
 
 const MAX_DAYS = 62;
 
@@ -27,7 +33,8 @@ const PRESETS: { label: string; range: () => DateRange }[] = [
   { label: "21–30", range: () => monthPartRange(3) },
 ];
 
-type Editing = { employeeId: string; date: string };
+// kind: punch - приход/уход и штрафы, plan - график
+type Editing = { employeeId: string; date: string; kind: "punch" | "plan" };
 
 export default function PayrollTab() {
   const initial = monthRange(0);
@@ -35,7 +42,9 @@ export default function PayrollTab() {
   const [dateTo, setDateTo] = useState(initial.to);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [savingDay, setSavingDay] = useState(false);
-  const { punch, shiftFine, adjustment, position, rate } = usePayrollMutations();
+  // На телефоне нет Shift - этот переключатель делает обычное нажатие «графиком»
+  const [planMode, setPlanMode] = useState(false);
+  const { punch, shiftFine, plan, link, adjustment, position, rate } = usePayrollMutations();
   const { sort, toggle } = usePayrollSort();
 
   const length = dateFrom && dateTo ? periodLength(dateFrom, dateTo) : 0;
@@ -66,6 +75,9 @@ export default function PayrollTab() {
       currency: employee.currency,
     });
 
+  const handleEditDay = (employeeId: string, date: string, withShift: boolean) =>
+    setEditing({ employeeId, date, kind: withShift !== planMode ? "plan" : "punch" });
+
   // Сохраняет время смены и штрафы за смену одним нажатием
   const handleSaveDay = async (
     arrival: string | null,
@@ -86,9 +98,31 @@ export default function PayrollTab() {
     }
   };
 
+  const handleSavePlan = async (
+    mode: PlanMode,
+    start: string | null,
+    end: string | null,
+    dates: string[],
+  ) => {
+    if (!editing) return;
+    try {
+      await plan.mutateAsync({
+        faceid_employee_id: editing.employeeId,
+        shift_dates: dates,
+        mode,
+        planned_start: start,
+        planned_end: end,
+      });
+      setEditing(null);
+    } catch {
+      // Ошибку уже показал toast в мутации
+    }
+  };
+
   const totalNet = employees.reduce((acc, e) => acc + e.net, 0);
   const totalMinutes = employees.reduce((acc, e) => acc + e.worked_minutes, 0);
   const withoutRate = employees.filter((e) => e.rate_per_hour <= 0 && e.worked_minutes > 0).length;
+  const editingDay = editing ? editingEmployee?.days[editing.date] : undefined;
 
   return (
     <div className="space-y-4">
@@ -144,6 +178,22 @@ export default function PayrollTab() {
         >
           <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
           Обновить
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setPlanMode((v) => !v)}
+          aria-pressed={planMode}
+          title="Включите, чтобы нажатие на ячейку открывало график (удобно на телефоне)"
+          className={cn(
+            "flex h-9 cursor-pointer items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors",
+            planMode
+              ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-950/40 dark:text-orange-300"
+              : "bg-secondary hover:bg-secondary/80",
+          )}
+        >
+          <CalendarClock className="h-4 w-4" />
+          {planMode ? "Режим графика: вкл" : "Режим графика"}
         </button>
 
         <button
@@ -205,7 +255,7 @@ export default function PayrollTab() {
             employees={employees}
             sort={sort}
             onSort={toggle}
-            onEditDay={(employeeId, date) => setEditing({ employeeId, date })}
+            onEditDay={handleEditDay}
             onAdjust={handleAdjust}
             onRate={handleRate}
             onPosition={(employeeId, value) =>
@@ -215,23 +265,46 @@ export default function PayrollTab() {
           <p className="text-xs text-muted-foreground">
             Оплата почасовая: часы считаются по минутам от прихода до ухода. Ставку за час, премию,
             штраф и посуду можно менять прямо в таблице, сохраняется при выходе из поля. Нажмите на
-            время, чтобы указать приход и уход вручную или поставить штраф за опоздание или невыход.
-            Синим выделено ручное время, жёлтым - смена без прихода или ухода (не считается), красной
-            точкой - смена со штрафом. Нажмите на заголовок «Имя», «Должность» или «Ставка/час»,
-            чтобы отсортировать - выбор запоминается.
+            время, чтобы указать приход и уход вручную или поставить штраф за невыход.{" "}
+            <b>Shift+клик</b> (или «Режим графика» на телефоне) - задать, во сколько сотрудник
+            должен прийти и уйти: за опоздание больше {data.late_grace_minutes ?? 5} мин и за ранний уход
+            штраф начислится сам по минутам. Синим выделено ручное время, жёлтым - смена без
+            прихода или ухода (не считается), красной точкой - смена с ручным штрафом. Нажмите на
+            заголовок «Имя», «Должность» или «Ставка/час», чтобы отсортировать - выбор
+            запоминается.
           </p>
         </>
       )}
 
-      {editing && editingEmployee && (
+      {editing?.kind === "punch" && editingEmployee && (
         <PunchDialog
           key={`${editing.employeeId}-${editing.date}`}
           employeeName={editingEmployee.name}
           date={editing.date}
-          day={editingEmployee.days[editing.date]}
+          day={editingDay}
           saving={savingDay}
           lateFinePerMinute={data?.late_fine_per_minute ?? 1000}
           onSave={(a, d, fines) => void handleSaveDay(a, d, fines)}
+          onClose={() => setEditing(null)}
+        />
+      )}
+
+      {editing?.kind === "plan" && editingEmployee && data && (
+        <PlanDialog
+          key={`plan-${editing.employeeId}-${editing.date}`}
+          employeeName={editingEmployee.name}
+          date={editing.date}
+          periodDates={data.dates}
+          day={editingDay}
+          linkedEmployeeId={editingEmployee.linked_employee_id ?? null}
+          saving={plan.isPending}
+          lateFinePerMinute={data.late_fine_per_minute ?? 1000}
+          lateGraceMinutes={data.late_grace_minutes ?? 5}
+          earlyFinePerMinute={data.early_leave_fine_per_minute ?? 1000}
+          onSave={(mode, start, end, dates) => void handleSavePlan(mode, start, end, dates)}
+          onLink={(employeeId) =>
+            link.mutate({ faceid_employee_id: editingEmployee.employee_id, employee_id: employeeId })
+          }
           onClose={() => setEditing(null)}
         />
       )}
