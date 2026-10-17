@@ -38,3 +38,20 @@ async def get_attendance_db() -> AsyncGenerator[AsyncSession, None]:
         )
     async with _AttendanceSession() as session:
         yield session
+
+
+def attendance_sync_enabled() -> bool:
+    """True, если ATTENDANCE_DATABASE_URL задан и соединение создано."""
+    return _AttendanceSession is not None
+
+
+async def attendance_session() -> AsyncSession:
+    """
+    Открывает сессию базы FaceID для использования вне FastAPI-эндпоинтов
+    (например, в фоновых задачах планировщика). В отличие от get_attendance_db,
+    это обычная функция, а не generator-зависимость — вызывающий код сам
+    должен закрыть сессию (`await session.close()`).
+    """
+    if _AttendanceSession is None:
+        raise RuntimeError("ATTENDANCE_DATABASE_URL не задан")
+    return _AttendanceSession()
