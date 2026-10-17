@@ -15,6 +15,7 @@ from app.tasks.checklist_scheduler import run_checklist_scheduler_loop
 from app.tasks.overdue_escalation import run_overdue_escalation_loop
 from app.tasks.login_attempt_cleanup import run_login_attempt_cleanup_loop
 from app.tasks.schedule_generator import run_schedule_generator_loop
+from app.tasks.google_sheets_sync import run_google_sheets_sync_loop
 from app.routers import (
     auth,
     branches,
@@ -52,11 +53,18 @@ async def lifespan(app: FastAPI):
     escalation_task = asyncio.create_task(run_overdue_escalation_loop(), name="overdue_escalation")
     login_cleanup_task = asyncio.create_task(run_login_attempt_cleanup_loop(), name="login_attempt_cleanup")
     schedule_task = asyncio.create_task(run_schedule_generator_loop(), name="schedule_generator")
+    # Опционально: выгрузка табеля FaceID в Google Sheets раз в сутки.
+    # Сама задача ничего не делает, если GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_SHEET_ID не заданы.
+    google_sheets_task = asyncio.create_task(run_google_sheets_sync_loop(), name="google_sheets_sync")
 
     try:
         yield
     finally:
-        for task in (cleanup_task, scheduler_task, escalation_task, login_cleanup_task, schedule_task):
+        tasks = (
+            cleanup_task, scheduler_task, escalation_task,
+            login_cleanup_task, schedule_task, google_sheets_task,
+        )
+        for task in tasks:
             task.cancel()
             try:
                 await task
