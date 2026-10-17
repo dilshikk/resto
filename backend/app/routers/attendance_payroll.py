@@ -692,17 +692,20 @@ def _sum_money(values: list[float]) -> Decimal:
     return sum((Decimal(str(v)) for v in values), Decimal(0))
 
 
-# ── Эндпоинты ────────────────────────────────────────────────────────────────
+# ── Основной расчёт (используется и роутом, и фоновой выгрузкой) ────────────
 
-@router.get("", response_model=PayrollOut)
-async def get_payroll(
-    date_from: date = Query(..., description="Начало периода YYYY-MM-DD"),
-    date_to: date = Query(..., description="Конец периода YYYY-MM-DD"),
-    _current: Employee = Depends(require_manager),
-    attendance_db: AsyncSession = Depends(get_attendance_db),
-    main_db: AsyncSession = Depends(get_db),
-):
-    """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену."""
+async def compute_payroll(
+    date_from: date,
+    date_to: date,
+    attendance_db: AsyncSession,
+    main_db: AsyncSession,
+) -> PayrollOut:
+    """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену.
+
+    Вынесено из get_payroll(), чтобы фоновая выгрузка в Google Sheets
+    (app/tasks/google_sheets_sync.py) могла использовать тот же расчёт без
+    HTTP-запроса и без зависимости require_manager.
+    """
     dates = _validate_period(date_from, date_to)
     faceid, faceid_names = await _load_faceid_days(attendance_db, date_from, date_to)
 
@@ -833,6 +836,20 @@ async def get_payroll(
         early_leave_fine_per_minute=float(EARLY_LEAVE_FINE_PER_MINUTE),
         employees=employees,
     )
+
+
+# ── Эндпоинты ────────────────────────────────────────────────────────────────
+
+@router.get("", response_model=PayrollOut)
+async def get_payroll(
+    date_from: date = Query(..., description="Начало периода YYYY-MM-DD"),
+    date_to: date = Query(..., description="Конец периода YYYY-MM-DD"),
+    _current: Employee = Depends(require_manager),
+    attendance_db: AsyncSession = Depends(get_attendance_db),
+    main_db: AsyncSession = Depends(get_db),
+):
+    """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену."""
+    return await compute_payroll(date_from, date_to, attendance_db, main_db)
 
 
 @router.put("/punch")
