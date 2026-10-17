@@ -48,6 +48,13 @@ services:
       # Format: postgresql+asyncpg://user:pass@host:port/dbname
       # Leave empty to disable the /attendance/* endpoints (returns 503).
       ATTENDANCE_DATABASE_URL: ${ATTENDANCE_DATABASE_URL:-}
+      # Daily FaceID attendance tabel export to Google Sheets (optional).
+      # GOOGLE_SERVICE_ACCOUNT_JSON = service account key JSON, pasted as one line.
+      # GOOGLE_SHEET_ID = the long id segment in the sheet's URL.
+      # Leave both empty to disable the export.
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_SHEET_ID: ${GOOGLE_SHEET_ID:-}
+      GOOGLE_SHEETS_SYNC_HOUR_UTC: ${GOOGLE_SHEETS_SYNC_HOUR_UTC:-2}
     volumes:
       - uploads_data:/data/uploads
     depends_on:
