@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # ── Managers' Telegram group for PDF checklist reports ───────────────────
     MANAGERS_CHAT_ID: int | None = None
 
+    # ── Google Sheets export of the FaceID attendance tabel (optional) ───────
+    # JSON key of a Google service account with edit access to the target
+    # sheet, pasted as a single line. When unset, the daily export is disabled.
+    GOOGLE_SERVICE_ACCOUNT_JSON: str | None = None
+    # ID of the destination Google Sheet (the long id segment in its URL).
+    GOOGLE_SHEET_ID: str | None = None
+    # Hour (UTC) at which the daily export to Google Sheets runs.
+    GOOGLE_SHEETS_SYNC_HOUR_UTC: int = 2
+
     # ── Application identity ─────────────────────────────────────────────────
     APP_NAME: str = "MADO Checklist"
 
@@ -61,6 +70,13 @@ class Settings(BaseSettings):
             return None
         return v
 
+    @field_validator("GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_SHEET_ID", mode="before")
+    @classmethod
+    def empty_google_setting_is_none(cls, v):  # noqa: ANN001, ANN206
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
     @field_validator("SECRET_KEY")
     @classmethod
     def secret_key_must_be_strong(cls, v: str) -> str:
@@ -81,11 +97,11 @@ class Settings(BaseSettings):
             )
         return v
 
-    @field_validator("CHECKLIST_SCHEDULE_HOUR_UTC")
+    @field_validator("CHECKLIST_SCHEDULE_HOUR_UTC", "GOOGLE_SHEETS_SYNC_HOUR_UTC")
     @classmethod
     def schedule_hour_must_be_valid(cls, v: int) -> int:
         if not 0 <= v <= 23:
-            raise ValueError("CHECKLIST_SCHEDULE_HOUR_UTC must be between 0 and 23")
+            raise ValueError("Schedule hour must be between 0 and 23")
         return v
 
     @field_validator("OVERDUE_MANAGER_NOTIFY_MINUTES", "OVERDUE_SUPERVISOR_NOTIFY_MINUTES")
