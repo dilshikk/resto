@@ -1,4 +1,5 @@
-from sqlalchemy import BigInteger, String, Boolean, DateTime, func, ForeignKey, ARRAY, Integer, UniqueConstraint
+from sqlalchemy import BigInteger, String, Boolean, DateTime, func, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 import datetime
@@ -32,6 +33,9 @@ class Employee(Base):
     # never used for authentication (telegram_id is the source of truth).
     telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     primary_branch_id: Mapped[int | None] = mapped_column(ForeignKey("branches.id"), nullable=True)
+    # Uses the PostgreSQL-specific ARRAY type (not the generic sqlalchemy
+    # ARRAY) because queries filter with .contains([branch_id]), which the
+    # generic ARRAY type does not implement and raises NotImplementedError.
     additional_branch_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer), nullable=False, default=list)
     hired_at: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
     # Preferred UI language for the Telegram bot: "ru" | "uz" | "en"
