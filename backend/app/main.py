@@ -37,6 +37,7 @@ from app.routers import (
     schedules,
 )
 from app.routers import attendance
+from app.routers import attendance_import
 from app.routers import attendance_rates
 from app.routers import attendance_payroll
 
@@ -110,6 +111,8 @@ app.include_router(bot.router, prefix="/api/v1")
 app.include_router(bot_complete.router, prefix="/api/v1")
 # FaceID посещаемость — отдельная БД (ATTENDANCE_DATABASE_URL)
 app.include_router(attendance.router, prefix="/api/v1")
+# Импорт событий FaceID из JSON терминала (вставка в странице «Посещаемость»)
+app.include_router(attendance_import.router, prefix="/api/v1")
 # Ставки сотрудников FaceID — основная БД
 app.include_router(attendance_rates.router, prefix="/api/v1")
 # Табель и расчёт зарплаты по FaceID (ручные правки в основной БД)
