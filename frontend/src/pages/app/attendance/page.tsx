@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils.ts";
 import RatesDialog from "./_components/RatesDialog.tsx";
+import ImportJsonDialog from "./_components/ImportJsonDialog.tsx";
 import PayrollTab from "./_components/PayrollTab.tsx";
 import LogsTab from "./_components/LogsTab.tsx";
 
@@ -23,7 +24,10 @@ export default function AttendancePage() {
             Учёт посещаемости сотрудников и расчёт зарплаты
           </p>
         </div>
-        <RatesDialog />
+        <div className="flex flex-wrap gap-2">
+          <ImportJsonDialog />
+          <RatesDialog />
+        </div>
       </div>
 
       <div className="inline-flex gap-1 rounded-lg bg-secondary p-1">
