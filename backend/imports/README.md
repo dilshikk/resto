@@ -27,3 +27,24 @@ psql "postgresql://user:pass@host:5432/faceid_db" -v ON_ERROR_STOP=1 \
 ```sql
 DELETE FROM public.access_logs WHERE auth_type = 'excel_import';
 ```
+
+## faceid_2026-10-10_2026-10-20.sql
+
+Отметки прихода/ухода из Excel «Транзакции_2026-10-10_2026-10-20.xlsx» -> `public.access_logs`. Формат и логика те же, что у предыдущего импорта.
+
+- «Идентификатор» -> `employee_id`
+- «Дата» + «Время» -> `access_date`, `access_time`, `access_datetime` (время Asia/Tashkent)
+- «Регистрация входа» -> `direction = 'in'`, «Регистрация выхода» -> `direction = 'out'`
+- `auth_type = 'excel_import'`
+- В Excel 1028 строк: точные повторы удалены, одна строка «Не определено» пропущена -> 829 отметок.
+- Период пересекается с прошлым импортом (10 октября): уже существующие отметки (тот же сотрудник, дата и минута) пропускаются. Повторный запуск ничего не дублирует.
+- В файле почти нет данных за 17 и 19 октября (2 и 4 отметки). Похоже, выгрузка за эти дни неполная.
+
+Запуск (строка подключения — как в `ATTENDANCE_DATABASE_URL`, но без `+asyncpg`):
+
+```bash
+psql "postgresql://user:pass@host:5432/faceid_db" -v ON_ERROR_STOP=1 \
+  -f backend/imports/faceid_2026-10-10_2026-10-20.sql
+```
+
+Откат делается так же, как и для предыдущего импорта (удаляет все отметки с `auth_type = 'excel_import'`, включая прошлый импорт).
