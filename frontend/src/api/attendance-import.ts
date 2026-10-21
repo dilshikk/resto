@@ -16,10 +16,23 @@ export type ImportJsonResult = {
   skipped_reasons: ImportSkippedReason[];
   date_from: string | null;
   date_to: string | null;
+  /** Зашифрованные ID из этого JSON, для которых ещё нет привязки к сотруднику */
+  unmapped_hashes: string[];
 };
 
-/** Отправляет JSON терминала (AcsEvent.InfoList) и добавляет события в базу FaceID */
-export async function importFaceidJson(payload: object): Promise<ImportJsonResult> {
-  const { data } = await apiClient.post<ImportJsonResult>("/attendance-import/json", payload);
+/**
+ * Отправляет JSON терминала (AcsEvent.InfoList) и добавляет события в базу FaceID.
+ * overrideEmployeeId — настоящий ID сотрудника, который нужно подставить вместо
+ * зашифрованного (хешированного) ID, если терминал прислал такие события.
+ * Используется только для входа/выхода, остальные данные события не используются.
+ */
+export async function importFaceidJson(
+  payload: object,
+  overrideEmployeeId?: string,
+): Promise<ImportJsonResult> {
+  const body = overrideEmployeeId
+    ? { ...payload, override_employee_id: overrideEmployeeId }
+    : payload;
+  const { data } = await apiClient.post<ImportJsonResult>("/attendance-import/json", body);
   return data;
 }
