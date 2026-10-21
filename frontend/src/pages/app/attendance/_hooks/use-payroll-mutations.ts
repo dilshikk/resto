@@ -7,6 +7,7 @@ import {
   savePayrollPlan,
   savePayrollPosition,
   savePayrollPunch,
+  savePayrollTermination,
   saveShiftFine,
   upsertAttendanceRate,
 } from "@/api/attendance.ts";
@@ -66,6 +67,14 @@ export function usePayrollMutations() {
     onSuccess: refresh,
     onError: fail,
   });
+  const termination = useMutation({
+    mutationFn: savePayrollTermination,
+    onSuccess: (_data, variables) => {
+      void refresh();
+      toast.success(variables.terminated_from ? "Сотрудник уволен" : "Сотрудник восстановлен");
+    },
+    onError: fail,
+  });
   const rate = useMutation({
     mutationFn: (input: RateInput) =>
       upsertAttendanceRate(input.employeeId, {
@@ -80,5 +89,5 @@ export function usePayrollMutations() {
     onError: fail,
   });
 
-  return { punch, shiftFine, plan, link, adjustment, position, rate };
+  return { punch, shiftFine, plan, link, adjustment, position, termination, rate };
 }
