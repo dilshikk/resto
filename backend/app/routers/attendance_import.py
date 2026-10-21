@@ -9,8 +9,11 @@
 - Время приводится к местному (Ташкент, UTC+5): в базе хранится местное время.
 - Отметка пропускается, если у сотрудника уже есть событие в ту же дату и минуту
   (так же, как в SQL-импорте из Excel), поэтому повторная вставка ничего не дублирует.
-- Если терминал отдал ID сотрудника в зашифрованном виде (длинная hex-строка),
-  такие события не импортируются: их нельзя связать с сотрудниками в базе.
+- Терминал может отдавать ID сотрудника в зашифрованном виде (длинный хэш). Такой ID
+  сопоставляется с настоящим по совпадению отметок (дата, минута, вход/выход) с тем,
+  что уже есть в базе, и соответствие запоминается (attendance_id_aliases).
+  Если уверенного совпадения нет, события пропускаются: чужой сотрудник в табеле
+  хуже пропущенной отметки.
 - auth_type = 'json_import' - метка, чтобы импорт можно было найти и откатить:
   DELETE FROM public.access_logs WHERE auth_type = 'json_import';
 """
@@ -20,11 +23,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance_database import get_attendance_db
 from app.auth import require_manager
+from app.database import get_db
+from app.models.attendance_alias import AttendanceIdAlias
 from app.models.employee import Employee
 
 router = APIRouter(prefix="/attendance-import", tags=["attendance"])
@@ -33,9 +38,19 @@ router = APIRouter(prefix="/attendance-import", tags=["attendance"])
 TASHKENT = timezone(timedelta(hours=5))
 AUTH_TYPE = "json_import"
 MAX_EVENTS = 20000
+# Настоящие ID короче; всё, что длиннее, считаем хэшем терминала
 MAX_ID_LENGTH = 32
+MAX_RAW_ID_LENGTH = 128
 ID_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 DIRECTIONS = {"checkIn": "in", "checkOut": "out"}
+REASON_HASHED = "ID сотрудника зашифрован терминалом и не опознан по отметкам"
+
+# Уверенное совпадение: минимум отметок, доля отметок хэша и отрыв от второго кандидата
+MATCH_MIN_EVENTS = 3
+MATCH_MIN_SHARE = 0.5
+MATCH_LEAD_FACTOR = 2
+
+EventKey = tuple[str, str, str]
 
 
 # ── Схемы ────────────────────────────────────────────────────────────────────
@@ -81,18 +96,32 @@ async def import_json(
     body: ImportJsonBody,
     _current: Employee = Depends(require_manager),
     attendance_db: AsyncSession = Depends(get_attendance_db),
+    main_db: AsyncSession = Depends(get_db),
 ):
     """Добавляет события FaceID из JSON терминала в базу посещаемости."""
     items = body.AcsEvent.InfoList
     skipped: Counter[str] = Counter()
-    events: dict[tuple[str, str, str], dict[str, str]] = {}
-    duplicates = 0
+    parsed: list[dict[str, str]] = []
 
     for item in items:
         event, reason = _parse_event(item)
         if event is None:
             skipped[reason] += 1
-            continue
+        else:
+            parsed.append(event)
+
+    aliases = await _resolve_hashes(attendance_db, main_db, parsed)
+
+    events: dict[EventKey, dict[str, str]] = {}
+    duplicates = 0
+    for event in parsed:
+        raw_id = event["employee_id"]
+        if len(raw_id) > MAX_ID_LENGTH:
+            real_id = aliases.get(raw_id)
+            if real_id is None:
+                skipped[REASON_HASHED] += 1
+                continue
+            event["employee_id"] = real_id
         key = (event["employee_id"], event["access_date"], event["access_time"][:5])
         if key in events:
             duplicates += 1
@@ -102,7 +131,7 @@ async def import_json(
     new_events: list[dict[str, str]] = []
     if events:
         existing = await _existing_keys(attendance_db, events)
-        duplicates += len(events) - sum(1 for k in events if k not in existing)
+        duplicates += sum(1 for k in events if k in existing)
         new_events = sorted(
             (e for k, e in events.items() if k not in existing),
             key=lambda e: (e["access_date"], e["access_time"], e["employee_id"]),
@@ -131,9 +160,7 @@ def _parse_event(item: AcsInfo) -> tuple[dict[str, str] | None, str]:
     employee_id = (item.employeeNoString or "").strip()
     if not employee_id:
         return None, "Нет ID сотрудника"
-    if len(employee_id) > MAX_ID_LENGTH:
-        return None, "ID сотрудника зашифрован терминалом"
-    if not ID_PATTERN.match(employee_id):
+    if len(employee_id) > MAX_RAW_ID_LENGTH or not ID_PATTERN.match(employee_id):
         return None, "Некорректный ID сотрудника"
 
     direction = DIRECTIONS.get(item.attendanceStatus or "")
@@ -166,11 +193,77 @@ def _parse_time(value: str | None) -> datetime | None:
     return moment.astimezone(TASHKENT)
 
 
+# ── Зашифрованные ID ─────────────────────────────────────────────────────────
+
+async def _resolve_hashes(
+    attendance_db: AsyncSession, main_db: AsyncSession, parsed: list[dict[str, str]]
+) -> dict[str, str]:
+    """Сопоставляет зашифрованные ID с настоящими: сначала из запомненных, затем по отметкам."""
+    by_hash: dict[str, list[dict[str, str]]] = {}
+    for event in parsed:
+        if len(event["employee_id"]) > MAX_ID_LENGTH:
+            by_hash.setdefault(event["employee_id"], []).append(event)
+    if not by_hash:
+        return {}
+
+    rows = (
+        await main_db.execute(select(AttendanceIdAlias).where(AttendanceIdAlias.id_hash.in_(list(by_hash))))
+    ).scalars().all()
+    mapping = {row.id_hash: row.faceid_employee_id for row in rows}
+
+    learned = False
+    for id_hash, hash_events in by_hash.items():
+        if id_hash in mapping:
+            continue
+        real_id = await _match_employee(attendance_db, hash_events)
+        if real_id is not None:
+            main_db.add(AttendanceIdAlias(id_hash=id_hash, faceid_employee_id=real_id))
+            mapping[id_hash] = real_id
+            learned = True
+    if learned:
+        await main_db.commit()
+    return mapping
+
+
+async def _match_employee(db: AsyncSession, hash_events: list[dict[str, str]]) -> str | None:
+    """Ищет сотрудника, у которого в базе есть те же отметки (дата, минута, вход/выход)."""
+    keys = {(e["access_date"], e["access_time"][:5], e["direction"]) for e in hash_events}
+    dates = sorted({k[0] for k in keys})
+    result = await db.execute(
+        text(
+            """
+            SELECT employee_id::text AS employee_id,
+                   access_date::text AS access_date,
+                   left(access_time::text, 5) AS minute,
+                   direction::text AS direction
+            FROM public.access_logs
+            WHERE access_date::text BETWEEN :date_from AND :date_to
+            """
+        ),
+        {"date_from": dates[0], "date_to": dates[-1]},
+    )
+    matched = {
+        (r.employee_id, r.access_date, r.minute, r.direction)
+        for r in result
+        if (r.access_date, r.minute, r.direction) in keys
+    }
+    ranked = Counter(m[0] for m in matched).most_common(2)
+    if not ranked:
+        return None
+
+    best_id, best_count = ranked[0]
+    runner_up = ranked[1][1] if len(ranked) > 1 else 0
+    confident = (
+        best_count >= MATCH_MIN_EVENTS
+        and best_count >= MATCH_MIN_SHARE * len(keys)
+        and best_count >= MATCH_LEAD_FACTOR * runner_up
+    )
+    return best_id if confident else None
+
+
 # ── Работа с базой ───────────────────────────────────────────────────────────
 
-async def _existing_keys(
-    db: AsyncSession, events: dict[tuple[str, str, str], dict[str, str]]
-) -> set[tuple[str, str, str]]:
+async def _existing_keys(db: AsyncSession, events: dict[EventKey, dict[str, str]]) -> set[EventKey]:
     """Отметки, которые уже есть в базе (сотрудник + дата + минута)."""
     ids = sorted({k[0] for k in events})
     dates = sorted({k[1] for k in events})
