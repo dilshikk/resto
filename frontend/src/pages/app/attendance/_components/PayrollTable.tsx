@@ -32,8 +32,9 @@ const DEVIATION = "bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-
 
 const FINE_LABELS = { late: "опоздание", absence: "невыход" } as const;
 
-// Список стандартных должностей для ресторана
-const POSITIONS = [
+// Список стандартных должностей для ресторана.
+// Экспортируется, чтобы использовать те же значения в фильтре по должности (FiltersBar).
+export const POSITIONS = [
   "Повар",
   "Су-шеф",
   "Шеф-повар",
