@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { UserX, UserCheck, X } from "lucide-react";
 import type { PayrollDay, PlanMode } from "@/api/attendance.ts";
 import { listEmployees } from "@/api/employees.ts";
 import { cn } from "@/lib/utils.ts";
@@ -15,12 +15,17 @@ type Props = {
   periodDates: string[];
   day: PayrollDay | undefined;
   linkedEmployeeId: number | null;
+  /** Дата увольнения (YYYY-MM-DD), если сотрудник уволен. null/undefined - активен */
+  terminatedFrom?: string | null;
   saving: boolean;
+  terminating: boolean;
   lateFinePerMinute: number;
   lateGraceMinutes: number;
   earlyFinePerMinute: number;
   onSave: (mode: PlanMode, start: string | null, end: string | null, dates: string[]) => void;
   onLink: (employeeId: number | null) => void;
+  /** null - восстановить (убрать увольнение) */
+  onTerminate: (terminatedFrom: string | null) => void;
   onClose: () => void;
 };
 
@@ -49,18 +54,22 @@ export default function PlanDialog({
   periodDates,
   day,
   linkedEmployeeId,
+  terminatedFrom,
   saving,
+  terminating,
   lateFinePerMinute,
   lateGraceMinutes,
   earlyFinePerMinute,
   onSave,
   onLink,
+  onTerminate,
   onClose,
 }: Props) {
   const [start, setStart] = useState(day?.planned_start ?? "");
   const [end, setEnd] = useState(day?.planned_end ?? "");
   const [scope, setScope] = useState<Scope>("day");
   const [showLink, setShowLink] = useState(false);
+  const isTerminated = Boolean(terminatedFrom);
 
   const { data: staff, isLoading: staffLoading } = useQuery({
     queryKey: ["employees", "active"],
@@ -113,6 +122,13 @@ export default function PlanDialog({
         </div>
 
         <div className="space-y-4 overflow-y-auto px-5 py-4">
+          {isTerminated && (
+            <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+              Сотрудник уволен с {terminatedFrom ? shortDate(terminatedFrom) : ""}. Скрыт из табеля в
+              периодах без данных за него.
+            </p>
+          )}
+
           {fromShifts && (
             <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
               Сейчас график взят из раздела «Смены». Если сохранить здесь, табель будет
@@ -215,6 +231,37 @@ export default function PlanDialog({
                   </option>
                 ))}
               </select>
+            )}
+          </div>
+
+          {/* Статус сотрудника: уволен/активен. Дата смены используется как дата увольнения. */}
+          <div className="space-y-2 border-t pt-4">
+            <h3 className="text-sm font-semibold">Статус сотрудника</h3>
+            <p className="text-xs text-muted-foreground">
+              {isTerminated
+                ? `Уволен с ${terminatedFrom ? shortDate(terminatedFrom) : ""}. Восстановите, если это ошибка.`
+                : "Сотрудник активен. Уволенные скрываются из табеля в периодах без данных за них."}
+            </p>
+            {isTerminated ? (
+              <button
+                type="button"
+                onClick={() => onTerminate(null)}
+                disabled={terminating}
+                className="flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300"
+              >
+                <UserCheck className="h-4 w-4" />
+                {terminating ? "Сохранение…" : "Восстановить сотрудника"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onTerminate(date)}
+                disabled={terminating}
+                className="flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-red-300 bg-red-50 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+              >
+                <UserX className="h-4 w-4" />
+                {terminating ? "Сохранение…" : `Уволен с ${shortDate(date)}`}
+              </button>
             )}
           </div>
         </div>
