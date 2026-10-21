@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, Calendar, Download, RefreshCw, Briefcase } from "lucide-react";
+import { CalendarClock, Calendar, Download, RefreshCw, Briefcase, Users } from "lucide-react";
 import {
   fetchPayroll,
   type AdjustmentField,
@@ -44,19 +44,22 @@ export default function PayrollTab() {
   const [dateFrom, setDateFrom] = useState(initial.from);
   const [dateTo, setDateTo] = useState(initial.to);
   const [positionFilter, setPositionFilter] = useState("");
+  // Уволенные без данных за выбранный период скрыты, если этот переключатель выключен
+  const [showTerminated, setShowTerminated] = useState(false);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [savingDay, setSavingDay] = useState(false);
   // На телефоне нет Shift - этот переключатель делает обычное нажатие «графиком»
   const [planMode, setPlanMode] = useState(false);
-  const { punch, shiftFine, plan, link, adjustment, position, rate } = usePayrollMutations();
+  const { punch, shiftFine, plan, link, adjustment, position, termination, rate } =
+    usePayrollMutations();
   const { sort, toggle } = usePayrollSort();
 
   const length = dateFrom && dateTo ? periodLength(dateFrom, dateTo) : 0;
   const validPeriod = length >= 1 && length <= MAX_DAYS;
 
   const { data, isLoading, isFetching, isError, refetch } = useQuery({
-    queryKey: ["attendance-payroll", dateFrom, dateTo],
-    queryFn: () => fetchPayroll(dateFrom, dateTo),
+    queryKey: ["attendance-payroll", dateFrom, dateTo, showTerminated],
+    queryFn: () => fetchPayroll(dateFrom, dateTo, showTerminated),
     enabled: validPeriod,
   });
 
@@ -79,6 +82,7 @@ export default function PayrollTab() {
     [filteredByPosition, sort],
   );
   const editingEmployee = employees.find((e) => e.employee_id === editing?.employeeId);
+  const terminatedCount = employees.filter((e) => e.terminated_from).length;
 
   const handleAdjust = (employeeId: string, field: AdjustmentField, value: number) =>
     adjustment.mutate({
@@ -208,6 +212,23 @@ export default function PayrollTab() {
           </select>
         </div>
 
+        {/* Уволенные без данных за период скрыты по умолчанию - этот переключатель их показывает */}
+        <button
+          type="button"
+          onClick={() => setShowTerminated((v) => !v)}
+          aria-pressed={showTerminated}
+          title="Уволенные сотрудники без отметок за выбранный период скрыты из табеля"
+          className={cn(
+            "flex h-9 cursor-pointer items-center gap-2 rounded-lg border px-4 text-sm font-medium transition-colors",
+            showTerminated
+              ? "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
+              : "bg-secondary hover:bg-secondary/80",
+          )}
+        >
+          <Users className="h-4 w-4" />
+          Показать уволенных
+        </button>
+
         <button
           type="button"
           onClick={() => void refetch()}
@@ -265,6 +286,9 @@ export default function PayrollTab() {
               У {withoutRate} сотр. не задана ставка - введите её в колонке «Ставка/час»
             </span>
           )}
+          {terminatedCount > 0 && (
+            <span className="text-red-600">Уволенных в списке: {terminatedCount}</span>
+          )}
         </div>
       )}
 
@@ -308,10 +332,10 @@ export default function PayrollTab() {
             время, чтобы указать приход и уход вручную или поставить штраф за невыход.{" "}
             <b>Shift+клик</b> (или «Режим графика» на телефоне) - задать, во сколько сотрудник
             должен прийти и уйти: за опоздание больше {data.late_grace_minutes ?? 5} мин и за ранний уход
-            штраф начислится сам по минутам. Синим выделено ручное время, жёлтым - смена без
-            прихода или ухода (не считается), красной точкой - смена с ручным штрафом. Нажмите на
-            заголовок «Имя», «Должность» или «Ставка/час», чтобы отсортировать - выбор
-            запоминается.
+            штраф начислится сам по минутам, или отметить сотрудника уволенным. Синим выделено
+            ручное время, жёлтым - смена без прихода или ухода (не считается), красной точкой -
+            смена с ручным штрафом. Нажмите на заголовок «Имя», «Должность» или «Ставка/час», чтобы
+            отсортировать - выбор запоминается.
           </p>
         </>
       )}
@@ -337,13 +361,21 @@ export default function PayrollTab() {
           periodDates={data.dates}
           day={editingDay}
           linkedEmployeeId={editingEmployee.linked_employee_id ?? null}
+          terminatedFrom={editingEmployee.terminated_from ?? null}
           saving={plan.isPending}
+          terminating={termination.isPending}
           lateFinePerMinute={data.late_fine_per_minute ?? 1000}
           lateGraceMinutes={data.late_grace_minutes ?? 5}
           earlyFinePerMinute={data.early_leave_fine_per_minute ?? 1000}
           onSave={(mode, start, end, dates) => void handleSavePlan(mode, start, end, dates)}
           onLink={(employeeId) =>
             link.mutate({ faceid_employee_id: editingEmployee.employee_id, employee_id: employeeId })
+          }
+          onTerminate={(terminatedFrom) =>
+            termination.mutate({
+              faceid_employee_id: editingEmployee.employee_id,
+              terminated_from: terminatedFrom,
+            })
           }
           onClose={() => setEditing(null)}
         />
