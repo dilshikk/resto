@@ -31,14 +31,19 @@ function errorMessage(error: unknown): string {
 export default function ImportJsonDialog() {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
   const [result, setResult] = useState<ImportJsonResult | null>(null);
   const qc = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: importFaceidJson,
+    mutationFn: ({ payload, overrideId }: { payload: object; overrideId?: string }) =>
+      importFaceidJson(payload, overrideId),
     onSuccess: (data) => {
       setResult(data);
-      setText("");
+      if (data.unmapped_hashes.length === 0) {
+        setText("");
+        setEmployeeId("");
+      }
       void qc.invalidateQueries({ queryKey: ["attendance-payroll"] });
       void qc.invalidateQueries({ queryKey: ["attendance-employees"] });
       toast.success(`Добавлено отметок: ${data.inserted}`);
@@ -53,13 +58,16 @@ export default function ImportJsonDialog() {
       return;
     }
     setResult(null);
-    mutation.mutate(payload);
+    mutation.mutate({ payload, overrideId: employeeId.trim() || undefined });
   };
 
   const close = () => {
     setOpen(false);
     setResult(null);
+    setEmployeeId("");
   };
+
+  const needsEmployeeId = (result?.unmapped_hashes.length ?? 0) > 0;
 
   return (
     <>
@@ -102,6 +110,23 @@ export default function ImportJsonDialog() {
                 className="w-full resize-y rounded-lg border bg-background p-3 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
               />
 
+              {needsEmployeeId && (
+                <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
+                  <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                    Терминал зашифровал ID сотрудника в {result?.unmapped_hashes.length}{" "}
+                    {result?.unmapped_hashes.length === 1 ? "отметке" : "отметках"}. Укажите, какому
+                    сотруднику они принадлежат, и нажмите «Импортировать» ещё раз — учитывается
+                    только время прихода/ухода, остальные данные не используются.
+                  </p>
+                  <input
+                    value={employeeId}
+                    onChange={(e) => setEmployeeId(e.target.value)}
+                    placeholder="ID сотрудника (например 1036440268)"
+                    className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              )}
+
               {result && <ImportSummary result={result} />}
             </div>
 
@@ -109,7 +134,11 @@ export default function ImportJsonDialog() {
               <button
                 type="button"
                 onClick={handleImport}
-                disabled={!text.trim() || mutation.isPending}
+                disabled={
+                  !text.trim() ||
+                  mutation.isPending ||
+                  (needsEmployeeId && !employeeId.trim())
+                }
                 className="cursor-pointer rounded-lg bg-primary px-6 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {mutation.isPending ? "Импортирую..." : "Импортировать"}
