@@ -6,18 +6,18 @@
   относится к дню прихода.
 - За смену может быть несколько отрезков (пришёл - ушёл на учёбу - вернулся - ушёл).
   Часы = сумма закрытых отрезков вход -> выход. Время вне работы не оплачивается.
-- Повторные сканы подряд (два входа или два выхода) считаются одним событием.
-- Если после последнего входа нет выхода, этот отрезок не считается (смена открыта).
-- Уход без предшествующего входа в той же смене (сотрудник не отметил приход, но
-  отметил уход) не считается в отработанные часы, но его время показывается в
-  столбце ухода, а не "нет" - значит уход реально был, просто не было отметки
-  о приходе (например, смена перенесена с предыдущего импорта или сотрудник
-  забыл приложить карту/лицо при входе). Приход в этом случае остаётся "нет".
+- Приход и уход определяются по порядку отметок в смене, а не по статусу от
+  терминала (терминал часто ставит вечернему уходу статус "вход"):
+  1-я отметка - приход, 2-я - уход, 3-я - приход и т.д.
+- Повторные сканы с промежутком не больше MERGE_WINDOW_MINUTES считаются одной
+  отметкой: для прихода берётся первый скан, для ухода - последний.
+- Если после последнего прихода нет ухода (нечётное число отметок), этот отрезок
+  не считается (смена открыта).
 - Ручные правки хранятся в основной БД и имеют приоритет над FaceID:
   заданы и приход, и уход - вся смена одним отрезком; задан только один -
   он заменяет начало первого отрезка или закрывает последний открытый.
-- Штраф за пропущенную отметку: если в FaceID за смену есть приход без ухода
-  или уход без прихода - штраф MISSING_PUNCH_FINE за каждую такую смену.
+- Штраф за пропущенную отметку: если в FaceID за смену нечётное число отметок
+  (приход без ухода) - штраф MISSING_PUNCH_FINE за каждую такую смену.
   Ручная правка исправляет часы, но штраф НЕ отменяет (он считается по FaceID).
   Смены за сегодня и вчера не штрафуются - сотрудник может быть ещё на работе.
 - Ручные штрафы за смену (attendance_shift_fines): опоздание и невыход.
@@ -85,6 +85,8 @@ router = APIRouter(prefix="/attendance-payroll", tags=["attendance"])
 
 MAX_PERIOD_DAYS = 62
 SHIFT_CUTOFF_MINUTES = 6 * 60
+# Сканы ближе этого промежутка друг к другу считаются одной отметкой
+MERGE_WINDOW_MINUTES = 10
 # Максимум оплачиваемого времени за одну смену; остальное - переработка
 MAX_PAID_MINUTES_PER_SHIFT = 10 * 60
 # Штраф за смену, где в FaceID нет прихода или ухода
@@ -278,7 +280,8 @@ class TerminationUpsert(BaseModel):
 
 @dataclass
 class _RawDay:
-    # События смены в хронологическом порядке: ("in" | "out", "HH:MM")
+    # События смены в хронологическом порядке: (направление от терминала, "HH:MM").
+    # Направление хранится для справки, в расчёте не используется.
     events: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -287,10 +290,6 @@ class _Session:
     # Закрытые отрезки [начало, конец] и начало незакрытого отрезка
     segments: list[list[str]] = field(default_factory=list)
     open_start: str | None = None
-    # Уход без предшествующего входа в той же смене (сотрудник не отметил
-    # приход, но отметил уход). Не считается в отработанные часы, но
-    # показывается в табеле как реальное время ухода (самое позднее такое).
-    dangling_departure: str | None = None
 
 
 @dataclass
@@ -367,39 +366,31 @@ def _to_hhmm(value: object) -> str | None:
     return f"{int(parts[0]):02d}:{int(parts[1][:2]):02d}"
 
 
-def _build_session(events: list[tuple[str, str]]) -> _Session:
-    """Собирает отрезки работы из событий FaceID.
+def _merge_scans(events: list[tuple[str, str]]) -> list[list[str]]:
+    """Группирует сканы: соседние сканы ближе MERGE_WINDOW_MINUTES - одна отметка."""
+    times = sorted((hhmm for _, hhmm in events), key=_shift_minutes)
+    groups: list[list[str]] = []
+    for hhmm in times:
+        if groups and _shift_minutes(hhmm) - _shift_minutes(groups[-1][-1]) <= MERGE_WINDOW_MINUTES:
+            groups[-1].append(hhmm)
+        else:
+            groups.append([hhmm])
+    return groups
 
-    Подряд идущие входы - один вход (берём первый), подряд идущие выходы - один
-    выход (берём последний). Выход без открытого входа (сотрудник не отметил
-    приход) не создаёт отрезок работы, но его время запоминается как
-    dangling_departure, чтобы показать в табеле вместо "нет".
+
+def _build_session(events: list[tuple[str, str]]) -> _Session:
+    """Собирает отрезки работы из отметок FaceID по их порядку во времени.
+
+    Отметки чередуются: приход, уход, приход, уход... Статус от терминала
+    не учитывается. Для прихода берётся первый скан группы, для ухода - последний.
     """
     session = _Session()
-    prev_kind: str | None = None
-    for kind, hhmm in events:
-        if kind == "in":
-            if session.open_start is None:
-                session.open_start = hhmm
+    for index, group in enumerate(_merge_scans(events)):
+        if index % 2 == 0:
+            session.open_start = group[0]
         elif session.open_start is not None:
-            if _shift_minutes(hhmm) > _shift_minutes(session.open_start):
-                session.segments.append([session.open_start, hhmm])
-                session.open_start = None
-        elif (
-            prev_kind == "out"
-            and session.segments
-            and _shift_minutes(hhmm) > _shift_minutes(session.segments[-1][1])
-        ):
-            session.segments[-1][1] = hhmm
-        else:
-            # "Уход" без входа: нет ни открытого отрезка, ни предыдущего закрытого
-            # выхода, который можно продлить. Запоминаем самое позднее такое время.
-            if (
-                session.dangling_departure is None
-                or _shift_minutes(hhmm) > _shift_minutes(session.dangling_departure)
-            ):
-                session.dangling_departure = hhmm
-        prev_kind = kind
+            session.segments.append([session.open_start, group[-1]])
+            session.open_start = None
     return session
 
 
@@ -428,33 +419,21 @@ def _session_minutes(session: _Session) -> int:
 
 
 def _session_bounds(session: _Session) -> tuple[str | None, str | None]:
-    """Первый приход и последний закрытый уход.
-
-    Если за смену нет ни одного закрытого отрезка и нет открытого прихода, но
-    был зафиксирован уход без входа (dangling_departure) - показываем это время
-    ухода, а приход остаётся "нет" (его действительно не было в FaceID).
-    """
+    """Первый приход и последний закрытый уход."""
     if session.segments:
         return session.segments[0][0], session.segments[-1][1]
-    if session.open_start is not None:
-        return session.open_start, None
-    return None, session.dangling_departure
+    return session.open_start, None
 
 
 def _has_missing_punch(raw: _RawDay | None, day: date, today: date) -> bool:
-    """В FaceID есть отметки за смену, но нет прихода или ухода.
+    """В FaceID есть отметки за смену, но после последнего прихода нет ухода.
 
     Считается только по FaceID: ручная правка штраф не снимает.
     Смены за сегодня и вчера пропускаем - ночная смена может быть ещё не закрыта.
     """
     if raw is None or not raw.events or day >= today - timedelta(days=1):
         return False
-    kinds = {kind for kind, _ in raw.events}
-    if kinds != {"in", "out"}:
-        return True
-    session = _build_session(raw.events)
-    # Последний вход остался без выхода
-    return session.open_start is not None or not session.segments
+    return _build_session(raw.events).open_start is not None
 
 
 def _plan_deviation(
@@ -534,9 +513,8 @@ async def _load_faceid_days(
         raw_time = _to_hhmm(row["access_time"])
         if raw_date is None or raw_time is None:
             continue
+        # Направление от терминала не фильтруем: приход/уход считаются по порядку
         direction = (row["direction"] or "").lower()
-        if direction not in ("in", "out"):
-            continue
         shift_day = _shift_date(raw_date, raw_time)
         if not (date_from <= shift_day <= date_to):
             continue

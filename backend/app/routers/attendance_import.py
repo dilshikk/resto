@@ -5,7 +5,11 @@
 добавляются в public.access_logs базы FaceID.
 
 Правила:
-- Берутся только события checkIn (вход) и checkOut (выход).
+- Берутся все отметки сотрудника. Направление от терминала (checkIn, checkOut,
+  breakIn/Out, overtimeIn/Out) сохраняется как подсказка, но в табеле приход и
+  уход определяются по порядку отметок в смене (см. attendance_payroll), потому
+  что терминал часто ставит неверный статус (например, вечерний уход как вход).
+  Отметка без статуса сохраняется как "in".
 - Время приводится к местному (Ташкент, UTC+5): в базе хранится местное время.
 - Отметка пропускается, если у сотрудника уже есть событие в ту же дату и минуту
   (так же, как в SQL-импорте из Excel), поэтому повторная вставка ничего не дублирует.
@@ -42,7 +46,17 @@ AUTH_TYPE = "json_import"
 MAX_EVENTS = 20000
 MAX_ID_LENGTH = 32
 ID_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
-DIRECTIONS = {"checkIn": "in", "checkOut": "out"}
+# Статусы терминала. Любой другой (или пустой) статус сохраняется как "in":
+# итоговое направление всё равно определяется порядком отметок в табеле.
+DIRECTIONS = {
+    "checkIn": "in",
+    "checkOut": "out",
+    "breakIn": "in",
+    "breakOut": "out",
+    "overtimeIn": "in",
+    "overtimeOut": "out",
+}
+DEFAULT_DIRECTION = "in"
 
 
 # ── Схемы ────────────────────────────────────────────────────────────────────
@@ -191,9 +205,7 @@ def _parse_event(item: AcsInfo, mapping: dict[str, str]) -> tuple[dict[str, str]
     elif not ID_PATTERN.match(employee_id):
         return None, "Некорректный ID сотрудника"
 
-    direction = DIRECTIONS.get(item.attendanceStatus or "")
-    if direction is None:
-        return None, "Не вход и не выход"
+    direction = DIRECTIONS.get(item.attendanceStatus or "", DEFAULT_DIRECTION)
 
     moment = _parse_time(item.time)
     if moment is None:
