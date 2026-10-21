@@ -9,8 +9,13 @@
 - Время приводится к местному (Ташкент, UTC+5): в базе хранится местное время.
 - Отметка пропускается, если у сотрудника уже есть событие в ту же дату и минуту
   (так же, как в SQL-импорте из Excel), поэтому повторная вставка ничего не дублирует.
-- Если терминал отдал ID сотрудника в зашифрованном виде (длинная hex-строка),
-  такие события не импортируются: их нельзя связать с сотрудниками в базе.
+- Если терминал отдал ID сотрудника в зашифрованном виде (длинная hex-строка,
+  обычно при проходе по карте), это событие нельзя напрямую связать с сотрудником
+  в базе. В этом случае менеджер указывает настоящий ID сотрудника вручную
+  (override_employee_id) — он используется только для входа/выхода, остальные
+  данные события (ФИО, фото, номер карты) не используются и не хранятся.
+  Привязка "хеш -> настоящий ID" сохраняется в attendance_card_mappings, поэтому
+  при следующем импорте того же терминала/сотрудника вводить ID снова не нужно.
 - auth_type = 'json_import' - метка, чтобы импорт можно было найти и откатить:
   DELETE FROM public.access_logs WHERE auth_type = 'json_import';
 """
@@ -20,11 +25,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance_database import get_attendance_db
 from app.auth import require_manager
+from app.database import get_db
+from app.models.attendance_card_mapping import AttendanceCardMapping
 from app.models.employee import Employee
 
 router = APIRouter(prefix="/attendance-import", tags=["attendance"])
@@ -59,6 +66,10 @@ class ImportJsonBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     AcsEvent: AcsEventBody
+    # Если в JSON есть события с зашифрованным (хешированным) ID сотрудника,
+    # этот ID подставляется вместо хеша — только для входа/выхода, остальные
+    # данные события не используются. Привязка сохраняется для будущих импортов.
+    override_employee_id: str | None = Field(default=None, max_length=64)
 
 
 class SkippedReason(BaseModel):
@@ -74,6 +85,10 @@ class ImportResult(BaseModel):
     skipped_reasons: list[SkippedReason]
     date_from: str | None
     date_to: str | None
+    # Хеши зашифрованных ID из этого JSON, для которых ещё нет привязки к
+    # сотруднику (ни сохранённой ранее, ни переданной сейчас в override_employee_id).
+    # Фронтенд показывает их менеджеру с полем "укажите ID сотрудника".
+    unmapped_hashes: list[str]
 
 
 @router.post("/json", response_model=ImportResult)
@@ -81,15 +96,47 @@ async def import_json(
     body: ImportJsonBody,
     _current: Employee = Depends(require_manager),
     attendance_db: AsyncSession = Depends(get_attendance_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Добавляет события FaceID из JSON терминала в базу посещаемости."""
     items = body.AcsEvent.InfoList
+
+    # Хеши зашифрованных ID, встреченные в этом JSON
+    hashes = {
+        item.employeeNoString.strip()
+        for item in items
+        if item.employeeNoString and len(item.employeeNoString.strip()) > MAX_ID_LENGTH
+    }
+    mapping: dict[str, str] = {}
+    if hashes:
+        rows = (
+            await db.execute(
+                select(AttendanceCardMapping).where(AttendanceCardMapping.hashed_id.in_(hashes))
+            )
+        ).scalars().all()
+        mapping = {r.hashed_id: r.faceid_employee_id for r in rows}
+
+        override = (body.override_employee_id or "").strip()
+        if override:
+            # override применяется ко всем ещё непривязанным хешам из этого JSON
+            # (обычно один терминал/карта = один сотрудник на партию событий)
+            for h in hashes - mapping.keys():
+                existing = (
+                    await db.execute(select(AttendanceCardMapping).where(AttendanceCardMapping.hashed_id == h))
+                ).scalar_one_or_none()
+                if existing is None:
+                    db.add(AttendanceCardMapping(hashed_id=h, faceid_employee_id=override))
+                else:
+                    existing.faceid_employee_id = override
+                mapping[h] = override
+            await db.commit()
+
     skipped: Counter[str] = Counter()
     events: dict[tuple[str, str, str], dict[str, str]] = {}
     duplicates = 0
 
     for item in items:
-        event, reason = _parse_event(item)
+        event, reason = _parse_event(item, mapping)
         if event is None:
             skipped[reason] += 1
             continue
@@ -113,6 +160,7 @@ async def import_json(
         await attendance_db.commit()
 
     dates = sorted(e["access_date"] for e in events.values())
+    unmapped = sorted(hashes - mapping.keys())
     return ImportResult(
         total=len(items),
         inserted=len(new_events),
@@ -121,19 +169,26 @@ async def import_json(
         skipped_reasons=[SkippedReason(reason=r, count=c) for r, c in skipped.most_common()],
         date_from=dates[0] if dates else None,
         date_to=dates[-1] if dates else None,
+        unmapped_hashes=unmapped,
     )
 
 
 # ── Разбор событий ───────────────────────────────────────────────────────────
 
-def _parse_event(item: AcsInfo) -> tuple[dict[str, str] | None, str]:
-    """Возвращает (событие, "") или (None, причина пропуска)."""
+def _parse_event(item: AcsInfo, mapping: dict[str, str]) -> tuple[dict[str, str] | None, str]:
+    """Возвращает (событие, "") или (None, причина пропуска).
+
+    mapping переводит зашифрованный (хешированный) ID сотрудника в настоящий
+    faceid_employee_id, если менеджер уже указал его (сейчас или ранее)."""
     employee_id = (item.employeeNoString or "").strip()
     if not employee_id:
         return None, "Нет ID сотрудника"
     if len(employee_id) > MAX_ID_LENGTH:
-        return None, "ID сотрудника зашифрован терминалом"
-    if not ID_PATTERN.match(employee_id):
+        real_id = mapping.get(employee_id)
+        if real_id is None:
+            return None, "ID сотрудника зашифрован терминалом"
+        employee_id = real_id
+    elif not ID_PATTERN.match(employee_id):
         return None, "Некорректный ID сотрудника"
 
     direction = DIRECTIONS.get(item.attendanceStatus or "")
