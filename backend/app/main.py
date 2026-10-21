@@ -40,6 +40,7 @@ from app.routers import attendance
 from app.routers import attendance_import
 from app.routers import attendance_rates
 from app.routers import attendance_payroll
+from app.routers import attendance_card_mappings
 
 
 @asynccontextmanager
@@ -117,6 +118,8 @@ app.include_router(attendance_import.router, prefix="/api/v1")
 app.include_router(attendance_rates.router, prefix="/api/v1")
 # Табель и расчёт зарплаты по FaceID (ручные правки в основной БД)
 app.include_router(attendance_payroll.router, prefix="/api/v1")
+# Привязка зашифрованных ID карт терминала к сотрудникам FaceID (основная БД)
+app.include_router(attendance_card_mappings.router, prefix="/api/v1")
 
 
 @app.get("/health")
