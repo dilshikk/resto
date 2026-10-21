@@ -138,6 +138,8 @@ export type PayrollEmployee = {
   position: string | null;
   /** Сотрудник системы, по которому берётся график из «Смен» */
   linked_employee_id?: number | null;
+  /** Дата увольнения (YYYY-MM-DD), если сотрудник уволен. null - активен */
+  terminated_from?: string | null;
   /** Ставка за час */
   rate_per_hour: number;
   currency: string;
@@ -199,9 +201,13 @@ export type Payroll = {
 
 export type AdjustmentField = "bonus" | "fine" | "posuda";
 
-export async function fetchPayroll(dateFrom: string, dateTo: string): Promise<Payroll> {
+export async function fetchPayroll(
+  dateFrom: string,
+  dateTo: string,
+  includeTerminated = false,
+): Promise<Payroll> {
   const { data } = await apiClient.get<Payroll>("/attendance-payroll", {
-    params: { date_from: dateFrom, date_to: dateTo },
+    params: { date_from: dateFrom, date_to: dateTo, include_terminated: includeTerminated },
   });
   return data;
 }
@@ -263,4 +269,12 @@ export async function savePayrollPosition(body: {
   position: string | null;
 }): Promise<void> {
   await apiClient.put("/attendance-payroll/position", body);
+}
+
+/** Уволить сотрудника с указанной даты (terminated_from) или восстановить (null) */
+export async function savePayrollTermination(body: {
+  faceid_employee_id: string;
+  terminated_from: string | null;
+}): Promise<void> {
+  await apiClient.put("/attendance-payroll/termination", body);
 }
