@@ -47,6 +47,13 @@
 - Имя сотрудника: ПРИОРИТЕТ у display_name из основной БД (attendance_rates).
   FaceID-имя используется только если display_name не задан. Это гарантирует,
   что смена имени в FaceID не ломает табель и все данные остаются привязаны к ID.
+- Увольнение сотрудника (attendance_employee_profiles.terminated_from): сотрудник
+  с заданной датой увольнения по умолчанию скрывается из табеля в периодах, где
+  по нему нет реальных данных (отработанных смен, начислений, штрафов) - чтобы
+  не мешать искать текущих сотрудников. Если в периоде данные есть (например,
+  он работал перед увольнением) - показывается как обычно, для сверки.
+  Параметр include_terminated=true показывает всех уволенных независимо от
+  данных за период (переключатель «Показать уволенных» в табеле).
 """
 from bisect import bisect_right
 from dataclasses import dataclass, field
@@ -156,6 +163,8 @@ class PayrollEmployeeOut(BaseModel):
     position: str | None
     # Сотрудник системы, по которому берётся план из «Смен»
     linked_employee_id: int | None = None
+    # Дата увольнения, если сотрудник уволен. None - активен.
+    terminated_from: date | None = None
     # Ставка за час на конец периода
     rate_per_hour: float
     # В периоде действовало несколько разных ставок
@@ -187,7 +196,7 @@ class PayrollEmployeeOut(BaseModel):
     early_fine_total: float = 0
     # Ручная посуда за период (вводит менеджер)
     posuda: float
-    # Автоматическая посуда: POSUDA_PER_SHIFT * засчитанные смены
+    # Автоматическая посуда за отработанные смены
     posuda_auto: float = 0
     # Всего посуды к удержанию
     posuda_total: float = 0
@@ -257,6 +266,12 @@ class AdjustmentUpsert(BaseModel):
 class PositionUpsert(BaseModel):
     faceid_employee_id: str = Field(min_length=1, max_length=64)
     position: str | None = Field(default=None, max_length=100)
+
+
+class TerminationUpsert(BaseModel):
+    faceid_employee_id: str = Field(min_length=1, max_length=64)
+    # Дата увольнения. None - восстановить сотрудника (убрать статус увольнения).
+    terminated_from: date | None = None
 
 
 # ── Время и смены ────────────────────────────────────────────────────────────
@@ -717,6 +732,21 @@ def _sum_money(values: list[float]) -> Decimal:
     return sum((Decimal(str(v)) for v in values), Decimal(0))
 
 
+def _has_real_data(emp: PayrollEmployeeOut) -> bool:
+    """Есть ли у сотрудника реальные данные за период: отработанные смены,
+    пропущенные отметки, начисления или штрафы. Используется, чтобы не прятать
+    уволенного сотрудника из периода, где он всё же работал/получал начисления.
+    """
+    return (
+        emp.worked_minutes > 0
+        or emp.missing_punch_count > 0
+        or emp.shift_fines_count > 0
+        or emp.bonus > 0
+        or emp.fine > 0
+        or emp.posuda > 0
+    )
+
+
 # ── Основной расчёт (используется и роутом, и фоновой выгрузкой) ────────────
 
 async def compute_payroll(
@@ -724,12 +754,17 @@ async def compute_payroll(
     date_to: date,
     attendance_db: AsyncSession,
     main_db: AsyncSession,
+    include_terminated: bool = False,
 ) -> PayrollOut:
     """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену.
 
     Вынесено из get_payroll(), чтобы фоновая выгрузка в Google Sheets
     (app/tasks/google_sheets_sync.py) могла использовать тот же расчёт без
     HTTP-запроса и без зависимости require_manager.
+
+    include_terminated: показывать уволенных сотрудников даже если за период
+    по ним нет данных (переключатель «Показать уволенных» в табеле). По
+    умолчанию уволенные без данных за период скрыты.
     """
     dates = _validate_period(date_from, date_to)
     faceid, faceid_names = await _load_faceid_days(attendance_db, date_from, date_to)
@@ -769,6 +804,9 @@ async def compute_payroll(
     employee_ids |= {eid for eid, _ in shift_fines}
     employee_ids |= {eid for eid, _ in plans}
     employee_ids |= {eid for eid, rate in rates.items() if rate.rate_per_shift > 0}
+    if include_terminated:
+        # Показать уволенных даже если за этот период по ним нет никаких данных
+        employee_ids |= {eid for eid, p in profiles.items() if p.terminated_from is not None}
 
     def display_name(employee_id: str) -> str:
         """
@@ -821,6 +859,7 @@ async def compute_payroll(
                 faceid_name=faceid_names.get(employee_id),
                 position=profile.position if profile else None,
                 linked_employee_id=profile.employee_id if profile else None,
+                terminated_from=profile.terminated_from if profile else None,
                 rate_per_hour=float(timeline.on(date_to)),
                 rate_changed=len(period_rates) > 1,
                 currency=rate.currency if rate else "UZS",
@@ -849,6 +888,10 @@ async def compute_payroll(
             )
         )
 
+    if not include_terminated:
+        # Уволенные без реальных данных за период не мешают искать текущих сотрудников
+        employees = [e for e in employees if not (e.terminated_from and not _has_real_data(e))]
+
     return PayrollOut(
         date_from=date_from,
         date_to=date_to,
@@ -869,12 +912,13 @@ async def compute_payroll(
 async def get_payroll(
     date_from: date = Query(..., description="Начало периода YYYY-MM-DD"),
     date_to: date = Query(..., description="Конец периода YYYY-MM-DD"),
+    include_terminated: bool = Query(False, description="Показывать уволенных без данных за период"),
     _current: Employee = Depends(require_manager),
     attendance_db: AsyncSession = Depends(get_attendance_db),
     main_db: AsyncSession = Depends(get_db),
 ):
     """Табель за период: оплата по часам по ставке дня смены, не более 10 часов за смену."""
-    return await compute_payroll(date_from, date_to, attendance_db, main_db)
+    return await compute_payroll(date_from, date_to, attendance_db, main_db, include_terminated)
 
 
 @router.put("/punch")
@@ -1112,5 +1156,39 @@ async def upsert_position(
         db.add(AttendanceEmployeeProfile(faceid_employee_id=body.faceid_employee_id, position=position))
     else:
         row.position = position
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.put("/termination")
+async def upsert_termination(
+    body: TerminationUpsert,
+    current: Employee = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """Отметить сотрудника уволенным с указанной даты или восстановить (terminated_from=null)."""
+    row = (
+        await db.execute(
+            select(AttendanceEmployeeProfile).where(
+                AttendanceEmployeeProfile.faceid_employee_id == body.faceid_employee_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        row = AttendanceEmployeeProfile(faceid_employee_id=body.faceid_employee_id)
+        db.add(row)
+    row.terminated_from = body.terminated_from
+
+    await log_action(
+        db,
+        actor_id=current.id,
+        action="attendance.employee_terminated" if body.terminated_from else "attendance.employee_restored",
+        entity_type="attendance_employee",
+        entity_id=None,
+        metadata={
+            "faceid_employee_id": body.faceid_employee_id,
+            "terminated_from": body.terminated_from.isoformat() if body.terminated_from else None,
+        },
+    )
     await db.commit()
     return {"status": "ok"}
