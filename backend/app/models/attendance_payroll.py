@@ -100,7 +100,9 @@ class AttendancePayrollAdjustment(Base):
 
 
 class AttendanceEmployeeProfile(Base):
-    """Дополнительные данные сотрудника FaceID: должность и привязка к сотруднику системы."""
+    """Дополнительные данные сотрудника FaceID: должность, привязка к сотруднику системы
+    и статус увольнения.
+    """
     __tablename__ = "attendance_employee_profiles"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -110,6 +112,11 @@ class AttendanceEmployeeProfile(Base):
     employee_id: Mapped[int | None] = mapped_column(
         ForeignKey("employees.id", ondelete="SET NULL"), nullable=True
     )
+    # Дата увольнения (migration 030). NULL - сотрудник активен (работает).
+    # Если задана, сотрудник скрывается из табеля в периодах без реальных
+    # отметок/начислений за него (чтобы не мешал искать текущих сотрудников),
+    # но остаётся виден там, где есть данные - для сверки при увольнении.
+    terminated_from: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
