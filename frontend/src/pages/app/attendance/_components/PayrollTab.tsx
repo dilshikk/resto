@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarClock, Calendar, Download, RefreshCw } from "lucide-react";
+import { CalendarClock, Calendar, Download, RefreshCw, Briefcase } from "lucide-react";
 import {
   fetchPayroll,
   type AdjustmentField,
@@ -19,7 +19,7 @@ import { exportPayrollExcel } from "../_lib/payroll-export.ts";
 import { formatHours } from "../_lib/format-hours.ts";
 import { sortEmployees, usePayrollSort } from "../_lib/payroll-sort.ts";
 import { usePayrollMutations } from "../_hooks/use-payroll-mutations.ts";
-import PayrollTable from "./PayrollTable.tsx";
+import PayrollTable, { POSITIONS } from "./PayrollTable.tsx";
 import PunchDialog, { type ShiftFineDraft } from "./PunchDialog.tsx";
 import PlanDialog from "./PlanDialog.tsx";
 
@@ -33,6 +33,9 @@ const PRESETS: { label: string; range: () => DateRange }[] = [
   { label: "21–30", range: () => monthPartRange(3) },
 ];
 
+// Должности без "Другое" - это значение открывает текстовое поле, а не фильтрует список
+const POSITION_FILTER_OPTIONS = POSITIONS.filter((p) => p !== "Другое");
+
 // kind: punch - приход/уход и штрафы, plan - график
 type Editing = { employeeId: string; date: string; kind: "punch" | "plan" };
 
@@ -40,6 +43,7 @@ export default function PayrollTab() {
   const initial = monthRange(0);
   const [dateFrom, setDateFrom] = useState(initial.from);
   const [dateTo, setDateTo] = useState(initial.to);
+  const [positionFilter, setPositionFilter] = useState("");
   const [editing, setEditing] = useState<Editing | null>(null);
   const [savingDay, setSavingDay] = useState(false);
   // На телефоне нет Shift - этот переключатель делает обычное нажатие «графиком»
@@ -56,7 +60,24 @@ export default function PayrollTab() {
     enabled: validPeriod,
   });
 
-  const employees = useMemo(() => sortEmployees(data?.employees ?? [], sort), [data, sort]);
+  // Должности, которые реально встречаются в загруженных данных (для случаев, когда
+  // сотруднику задана должность вне стандартного списка, например введена вручную)
+  const availablePositions = useMemo(() => {
+    const extra = new Set((data?.employees ?? []).map((e) => e.position?.trim()).filter(Boolean) as string[]);
+    for (const p of POSITION_FILTER_OPTIONS) extra.delete(p);
+    return [...POSITION_FILTER_OPTIONS, ...[...extra].sort((a, b) => a.localeCompare(b, "ru"))];
+  }, [data]);
+
+  const filteredByPosition = useMemo(() => {
+    const all = data?.employees ?? [];
+    if (!positionFilter) return all;
+    return all.filter((e) => (e.position?.trim() ?? "") === positionFilter);
+  }, [data, positionFilter]);
+
+  const employees = useMemo(
+    () => sortEmployees(filteredByPosition, sort),
+    [filteredByPosition, sort],
+  );
   const editingEmployee = employees.find((e) => e.employee_id === editing?.employeeId);
 
   const handleAdjust = (employeeId: string, field: AdjustmentField, value: number) =>
@@ -170,6 +191,23 @@ export default function PayrollTab() {
           />
         </div>
 
+        {/* Фильтр по должности: показывает только сотрудников выбранной должности */}
+        <div className="flex items-center gap-2">
+          <Briefcase className="h-4 w-4 text-muted-foreground" />
+          <select
+            value={positionFilter}
+            onChange={(e) => setPositionFilter(e.target.value)}
+            className="h-9 w-44 rounded-lg border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="">Все должности</option>
+            {availablePositions.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <button
           type="button"
           onClick={() => void refetch()}
@@ -244,7 +282,9 @@ export default function PayrollTab() {
 
       {data && employees.length === 0 && (
         <div className="rounded-xl border py-16 text-center text-muted-foreground">
-          Нет данных за выбранный период
+          {positionFilter
+            ? `Нет сотрудников с должностью «${positionFilter}» за выбранный период`
+            : "Нет данных за выбранный период"}
         </div>
       )}
 
